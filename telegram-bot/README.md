@@ -47,7 +47,7 @@ Bot 使用 Telegram 原生 Reply Keyboard。发送 `/start` 或手动输入 `/me
 - 👤 当前配置 / 🌐 打开图床
 - ⬆️ 版本升级
 
-Bot 会主动删除 Telegram 的命令菜单，因此左侧蓝色「菜单」入口不会保留。Reply Keyboard 的展开/收起按钮由 Telegram 客户端原生提供，按钮具体位于输入框哪一侧由客户端决定，通常会显示为键盘图标。
+Bot 会主动删除 Telegram 的命令菜单，因此左侧蓝色「菜单」入口不会保留。Reply Keyboard 不再提供额外的“收起菜单”按钮；展开/收起完全由 Telegram 客户端输入框旁的原生键盘按钮控制，按钮具体位于哪一侧由客户端决定。
 
 Bot 会调用 `GET /api/channels` 动态读取图床中已经配置并启用的渠道，并主动过滤 Telegram 存储类型。
 

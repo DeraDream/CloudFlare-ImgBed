@@ -99,11 +99,10 @@ async function processFileUpload(context, formdata = null) {
     // 路径安全性处理：防止路径穿越和特殊字符注入
     uploadFolder = sanitizeUploadFolder(uploadFolder);
 
-    let uploadChannel = 'TelegramNew';
+    let uploadChannel = 'CloudflareR2';
     switch (urlParamUploadChannel) {
         case 'telegram':
-            uploadChannel = 'TelegramNew';
-            break;
+            return createResponse('Error: Telegram storage is disabled in this fork; use the Telegram Bot upload entry instead.', { status: 400 });
         case 'cfr2':
             uploadChannel = 'CloudflareR2';
             break;
@@ -123,7 +122,7 @@ async function processFileUpload(context, formdata = null) {
             uploadChannel = 'External';
             break;
         default:
-            uploadChannel = 'TelegramNew';
+            uploadChannel = 'CloudflareR2';
             break;
     }
 
@@ -257,13 +256,7 @@ async function processFileUpload(context, formdata = null) {
         const res = await uploadFileToExternal(context, fullId, metadata, returnLink);
         return res;
     } else {
-        // ----------------Telegram New 渠道-------------------
-        const res = await uploadFileToTelegram(context, fullId, metadata, fileExt, fileName, fileType, returnLink);
-        if (res.status === 200 || !autoRetry) {
-            return res;
-        } else {
-            err = await res.text();
-        }
+        return createResponse('Error: Unsupported upload channel', { status: 400 });
     }
 
     // 上传失败，开始自动切换渠道重试
@@ -863,7 +856,7 @@ async function tryRetry(err, context, uploadChannel, fullId, metadata, fileExt, 
     const { env, url, formdata } = context;
 
     // 渠道列表（Discord 因为有 10MB 限制，放在最后尝试）
-    const channelList = ['CloudflareR2', 'TelegramNew', 'S3', 'HuggingFace', 'WebDAV', 'Discord'];
+    const channelList = ['CloudflareR2', 'S3', 'HuggingFace', 'WebDAV', 'Discord'];
     const errMessages = {};
     errMessages[uploadChannel] = 'Error: ' + uploadChannel + err;
 
@@ -872,8 +865,6 @@ async function tryRetry(err, context, uploadChannel, fullId, metadata, fileExt, 
     let retryRes = null;
     if (uploadChannel === 'CloudflareR2') {
         retryRes = await uploadFileToCloudflareR2(context, fullId, metadata, returnLink);
-    } else if (uploadChannel === 'TelegramNew') {
-        retryRes = await uploadFileToTelegram(context, fullId, metadata, fileExt, fileName, fileType, returnLink);
     } else if (uploadChannel === 'S3') {
         retryRes = await uploadFileToS3(context, fullId, metadata, returnLink);
     } else if (uploadChannel === 'HuggingFace') {
@@ -897,8 +888,6 @@ async function tryRetry(err, context, uploadChannel, fullId, metadata, fileExt, 
             let res = null;
             if (channelList[i] === 'CloudflareR2') {
                 res = await uploadFileToCloudflareR2(context, fullId, metadata, returnLink);
-            } else if (channelList[i] === 'TelegramNew') {
-                res = await uploadFileToTelegram(context, fullId, metadata, fileExt, fileName, fileType, returnLink);
             } else if (channelList[i] === 'S3') {
                 res = await uploadFileToS3(context, fullId, metadata, returnLink);
             } else if (channelList[i] === 'HuggingFace') {

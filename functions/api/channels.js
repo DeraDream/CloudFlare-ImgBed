@@ -39,10 +39,6 @@ export async function onRequest(context) {
 
         // 构建渠道列表，返回渠道名称和实际的 Channel 类型
         const channels = {
-            telegram: uploadConfig.telegram.channels.map(ch => ({
-                name: ch.name,
-                type: 'TelegramNew'
-            })),
             cfr2: uploadConfig.cfr2.channels.map(ch => ({
                 name: ch.name,
                 type: 'CloudflareR2'

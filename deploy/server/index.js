@@ -378,6 +378,16 @@ app.all('*', async (c, next) => {
     await next();
 });
 
+// 前端由本 Fork 直接维护，避免 Cloudflare / 浏览器长期缓存旧的编译 bundle。
+app.use('/js/*', async (c, next) => {
+    await next();
+    c.header('Cache-Control', 'no-cache, no-store, must-revalidate');
+});
+app.use('/index.html', async (c, next) => {
+    await next();
+    c.header('Cache-Control', 'no-cache, no-store, must-revalidate');
+});
+
 // 静态文件服务
 app.use('/*', serveStatic({
     root: './frontend-dist',

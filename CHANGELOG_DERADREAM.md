@@ -1,5 +1,10 @@
 # DeraDream Fork Changelog
 
+## 2.7
+
+- Telegram 上传成功结果移除 BBCode，仅保留 URL 与 Markdown。
+- Bot 版本更新为 v0.3.3。
+
 ## 2.6
 
 - 版本号改为两段式短版本，例如 `2.6`，不再显示 `2.7.6-dd.x`。

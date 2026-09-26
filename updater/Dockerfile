@@ -1,6 +1,6 @@
 FROM docker:cli
 
-RUN apk add --no-cache python3 git docker-cli-compose
+RUN apk add --no-cache python3 git
 
 WORKDIR /app
 COPY server.py /app/server.py

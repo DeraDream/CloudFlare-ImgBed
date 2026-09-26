@@ -151,6 +151,7 @@ def find_duplicate(
     channel_type: str,
     channel_name: str,
     upload_folder: str,
+    user_id: Optional[int] = None,
     exclude_id: Optional[int] = None,
 ):
     sql = """
@@ -164,6 +165,9 @@ def find_duplicate(
           AND url != ''
     """
     params: List[Any] = [sha256, channel_type, channel_name, upload_folder]
+    if user_id is not None:
+        sql += " AND user_id=?"
+        params.append(int(user_id))
     if exclude_id is not None:
         sql += " AND id != ?"
         params.append(int(exclude_id))

@@ -27,7 +27,7 @@ from telegram.ext import (
     filters,
 )
 
-BOT_VERSION = "v0.3.1"
+BOT_VERSION = "v0.3.2"
 BOT_TOKEN_ENV = os.getenv("BOT_TOKEN", "").strip()
 IMGBED_URL = os.getenv("IMGBED_URL", "http://imgbed:8080").rstrip("/")
 IMGBED_PUBLIC_URL = os.getenv("IMGBED_PUBLIC_URL", "").strip().rstrip("/")
@@ -327,8 +327,6 @@ def update_status_text(data: dict) -> str:
         return "⬆️ <b>版本升级</b>\n\n❌ 无法获取版本信息：<code>" + html.escape(str(data.get("error", "unknown"))) + "</code>"
     current = data.get("currentVersion") or APP_VERSION or "unknown"
     latest = data.get("latestVersion") or "unknown"
-    current_commit = data.get("currentShort") or ""
-    latest_commit = data.get("latestShort") or ""
     if data.get("updating"):
         status = "⏳ " + str(data.get("message") or "正在升级")
     elif data.get("updateAvailable"):
@@ -337,12 +335,8 @@ def update_status_text(data: dict) -> str:
         status = "✅ 当前已经是最新版本，无需升级"
     return (
         "⬆️ <b>版本升级</b>\n\n"
-        f"当前版本：<code>{html.escape(str(current))}</code>"
-        + (f" ({html.escape(str(current_commit))})" if current_commit else "")
-        + "\n"
-        f"最新版本：<code>{html.escape(str(latest))}</code>"
-        + (f" ({html.escape(str(latest_commit))})" if latest_commit else "")
-        + "\n\n"
+        f"当前版本：<code>{html.escape(str(current))}</code>\n"
+        f"最新版本：<code>{html.escape(str(latest))}</code>\n\n"
         + status
     )
 
@@ -371,13 +365,11 @@ async def show_update_status(update: Update) -> None:
 def update_result_text(data: dict) -> str:
     success = data.get("success")
     version = data.get("currentVersion") or APP_VERSION or "unknown"
-    commit = data.get("currentShort") or ""
     if success is True:
         return (
             "✅ <b>版本升级成功</b>\n\n"
             f"当前版本：<code>{html.escape(str(version))}</code>"
-            + (f"\nCommit：<code>{html.escape(str(commit))}</code>" if commit else "")
-            + "\n\n图床与 Telegram Bot 已切换到新版本。"
+            + "\n\nImgBed 与 Telegram Bot 已应用新版本。"
         )
     message = str(data.get("message") or data.get("error") or "未知错误")
     stage = str(data.get("stage") or "failed")

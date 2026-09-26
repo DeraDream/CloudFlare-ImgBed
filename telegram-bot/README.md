@@ -11,13 +11,14 @@
 - 可在 Telegram 内配置与 Web 上传页对应的常用上传参数：
   - 存储渠道 / 渠道名称
   - 上传目录
+  - 按日期自动目录
   - 自动切换
   - 文件命名方式
   - 转换 WebP
   - 图片压缩
   - 压缩阈值
   - 期望大小
-- 支持 Telegram Photo 和 Document。
+- 支持 Telegram Photo、Video、Document，以及相册批量上传。
 - 上传成功返回 URL / Markdown。
 - 用户设置保存到 SQLite。
 
@@ -32,6 +33,7 @@
 | `IMGBED_PUBLIC_URL` | 建议 | 返回给用户的公网图床地址，例如 `https://img.example.com` |
 | `BOT_DB_PATH` | 否 | SQLite 路径，默认 `/data/bot.db` |
 | `REQUEST_TIMEOUT` | 否 | 上传请求超时，默认 120 秒 |
+| `BOT_TIMEZONE` | 否 | 日期目录和历史时间所用时区，默认 `Asia/Shanghai` |
 
 ## 命令
 
@@ -40,12 +42,13 @@
 - `/settings`：完整上传设置
 - `/set_storage`：选择默认存储渠道
 - `/me`：查看当前 Bot 用户和上传配置
+- `/recent`：查看最近上传
 
 Bot 使用 Telegram 原生 Reply Keyboard。发送 `/start` 或手动输入 `/menu` 后，会在输入框下方显示快捷按钮：
 
 - ⚙️ 上传设置 / 📦 存储渠道
-- 👤 当前配置 / 🌐 打开图床
-- ⬆️ 版本升级
+- 👤 当前配置 / 🕘 最近上传
+- 🌐 打开图床 / ⬆️ 版本升级
 
 Bot 会主动删除 Telegram 的命令菜单，因此左侧蓝色「菜单」入口不会保留。Reply Keyboard 不再提供额外的“收起菜单”按钮；展开/收起完全由 Telegram 客户端输入框旁的原生键盘按钮控制，按钮具体位于哪一侧由客户端决定。
 

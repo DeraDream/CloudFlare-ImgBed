@@ -284,6 +284,94 @@ def reset_settings(user_id: int) -> UserSettings:
     return get_settings(user_id)
 
 
+def settings_from_snapshot(user_id: int, data: dict) -> UserSettings:
+    base = asdict(get_settings(user_id))
+    for key in base:
+        if key in data:
+            base[key] = data[key]
+    base["user_id"] = user_id
+    return UserSettings(**base)
+
+
+def normalize_folder(folder: str) -> str:
+    folder = (folder or "/").replace("\\", "/").strip()
+    if not folder.startswith("/"):
+        folder = "/" + folder
+    folder = re.sub(r"/+", "/", folder)
+    if len(folder) > 1:
+        folder = folder.rstrip("/")
+    return folder or "/"
+
+
+def effective_upload_folder(settings: UserSettings) -> str:
+    base = normalize_folder(settings.upload_folder)
+    if not settings.auto_date_dir:
+        return base
+    date_part = datetime.now(LOCAL_TZ).strftime("%Y/%m/%d")
+    if base == "/":
+        return "/" + date_part
+    return f"{base}/{date_part}"
+
+
+def parse_caption_metadata(caption: str) -> Tuple[List[str], str]:
+    caption = (caption or "").strip()
+    if not caption:
+        return [], ""
+    tags = []
+    seen = set()
+    for match in re.finditer(r"(?<!\S)#([\w\u4e00-\u9fff-]{1,32})", caption, flags=re.UNICODE):
+        tag = match.group(1).strip()
+        key = tag.casefold()
+        if tag and key not in seen:
+            seen.add(key)
+            tags.append(tag)
+    note = re.sub(r"(?<!\S)#[\w\u4e00-\u9fff-]{1,32}", " ", caption, flags=re.UNICODE)
+    note = re.sub(r"\s+", " ", note).strip()
+    return tags[:20], note[:500]
+
+
+def format_bytes(value: int) -> str:
+    size = float(max(0, int(value or 0)))
+    units = ["B", "KB", "MB", "GB", "TB"]
+    for unit in units:
+        if size < 1024 or unit == units[-1]:
+            if unit == "B":
+                return f"{int(size)} {unit}"
+            return f"{size:.2f} {unit}"
+        size /= 1024
+    return f"{size:.2f} TB"
+
+
+def format_eta(seconds: float) -> str:
+    if seconds < 0 or seconds == float("inf"):
+        return "--"
+    seconds = int(round(seconds))
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, sec = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m {sec}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes}m"
+
+
+def get_image_info(data: bytes, mime_type: str, fallback_width: int = 0, fallback_height: int = 0) -> dict:
+    info = {
+        "width": int(fallback_width or 0),
+        "height": int(fallback_height or 0),
+        "format": "",
+    }
+    if not (mime_type or "").startswith("image/"):
+        return info
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            info["width"], info["height"] = image.size
+            info["format"] = (image.format or "").upper()
+    except Exception:
+        pass
+    return info
+
+
 def is_allowed(user_id: Optional[int]) -> bool:
     if user_id is None or not current_bot_enabled():
         return False
@@ -682,6 +770,9 @@ def settings_text(s: UserSettings) -> str:
         "⚙️ <b>上传设置</b>\n\n"
         f"📦 存储渠道：<code>{html.escape(channel)}</code>\n"
         f"📁 上传目录：<code>{html.escape(s.upload_folder or '/')}</code>\n"
+        f"📅 日期目录：{'✅ 开启' if s.auto_date_dir else '❌ 关闭'}"
+        + (f" → <code>{html.escape(effective_upload_folder(s))}</code>" if s.auto_date_dir else "")
+        + "\n"
         f"🔄 自动切换：{'✅ 开启' if s.auto_retry else '❌ 关闭'}\n"
         f"📝 命名方式：{NAME_LABELS.get(s.name_type, s.name_type)}\n"
         f"🖼 转换 WebP：{'✅ 开启' if s.convert_webp else '❌ 关闭'}\n"
@@ -698,17 +789,18 @@ def settings_keyboard(s: UserSettings) -> InlineKeyboardMarkup:
             InlineKeyboardButton("📁 上传目录", callback_data="cfg:folder"),
         ],
         [
+            InlineKeyboardButton(f"📅 日期目录 {'✅' if s.auto_date_dir else '❌'}", callback_data="cfg:date"),
             InlineKeyboardButton(f"🔄 自动切换 {'✅' if s.auto_retry else '❌'}", callback_data="cfg:auto"),
+        ],
+        [
             InlineKeyboardButton("📝 命名方式", callback_data="cfg:name"),
-        ],
-        [
             InlineKeyboardButton(f"🖼 WebP {'✅' if s.convert_webp else '❌'}", callback_data="cfg:webp"),
-            InlineKeyboardButton(f"🗜 压缩 {'✅' if s.compress_enabled else '❌'}", callback_data="cfg:compress"),
         ],
         [
+            InlineKeyboardButton(f"🗜 压缩 {'✅' if s.compress_enabled else '❌'}", callback_data="cfg:compress"),
             InlineKeyboardButton("📏 压缩阈值", callback_data="cfg:threshold"),
-            InlineKeyboardButton("🎯 期望大小", callback_data="cfg:target"),
         ],
+        [InlineKeyboardButton("🎯 期望大小", callback_data="cfg:target")],
         [InlineKeyboardButton("↩️ 恢复默认", callback_data="cfg:reset")],
     ])
 
@@ -854,6 +946,8 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     elif data == "cfg:folder":
         context.user_data["awaiting_setting"] = "folder"
         await query.edit_message_text("📁 请输入上传目录，例如：<code>/telegram</code>\n输入 <code>/</code> 表示根目录。", parse_mode="HTML")
+    elif data == "cfg:date":
+        await render_settings(update, update_settings(uid, auto_date_dir=not s.auto_date_dir))
     elif data == "cfg:auto":
         await render_settings(update, update_settings(uid, auto_retry=not s.auto_retry))
     elif data == "cfg:name":

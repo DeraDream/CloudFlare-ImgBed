@@ -295,6 +295,7 @@ def do_update():
                 "--name", helper_name,
                 "-v", "/var/run/docker.sock:/var/run/docker.sock",
                 "-v", f"{PROJECT_DIR}:{PROJECT_DIR}",
+                "-e", f"PROJECT_DIR={PROJECT_DIR}",
                 "-w", str(PROJECT_DIR),
                 updater_image,
                 "sh", "-c", helper_script,

@@ -1,0 +1,26 @@
+name: DeraDream Fork CI
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Python syntax
+        run: |
+          python3 -m py_compile telegram-bot/bot.py updater/server.py
+
+      - name: Frontend bundle syntax
+        run: |
+          node --check frontend-dist/js/app.1e4229a6.js
+          node --check frontend-dist/js/502.58060353.js
+          node --check frontend-dist/js/757.27c783c1.js
+
+      - name: Docker Compose config
+        run: |
+          IMGBED_PUBLIC_URL=https://img.example.com docker compose config >/dev/null

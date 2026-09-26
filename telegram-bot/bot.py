@@ -2,10 +2,12 @@
 import asyncio
 import html
 import io
+import json
 import logging
 import mimetypes
 import os
 import sqlite3
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -25,11 +27,12 @@ from telegram.ext import (
 )
 
 BOT_VERSION = "v0.1.0"
-BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+BOT_TOKEN_ENV = os.getenv("BOT_TOKEN", "").strip()
 IMGBED_URL = os.getenv("IMGBED_URL", "http://imgbed:8080").rstrip("/")
 IMGBED_PUBLIC_URL = os.getenv("IMGBED_PUBLIC_URL", "").strip().rstrip("/")
-IMGBED_API_TOKEN = os.getenv("IMGBED_API_TOKEN", "").strip()
+IMGBED_API_TOKEN_ENV = os.getenv("IMGBED_API_TOKEN", "").strip()
 DB_PATH = os.getenv("BOT_DB_PATH", "/data/bot.db")
+IMGBED_DB_PATH = os.getenv("IMGBED_DB_PATH", "/imgbed-data/database.sqlite")
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "120"))
 
 
@@ -46,7 +49,55 @@ def parse_allowed_ids(raw: str) -> set[int]:
     return result
 
 
-ALLOWED_USER_IDS = parse_allowed_ids(os.getenv("ALLOWED_USER_IDS", ""))
+ALLOWED_USER_IDS_ENV = parse_allowed_ids(os.getenv("ALLOWED_USER_IDS", ""))
+
+
+def load_web_bot_config() -> dict:
+    """从 ImgBed Docker 数据库读取 Telegram Bot 上传配置。"""
+    if not IMGBED_DB_PATH or not os.path.exists(IMGBED_DB_PATH):
+        return {}
+    try:
+        conn = sqlite3.connect(f"file:{IMGBED_DB_PATH}?mode=ro", uri=True)
+        row = conn.execute(
+            "SELECT value FROM settings WHERE key=?",
+            ("manage@sysConfig@upload",),
+        ).fetchone()
+        conn.close()
+        if not row or not row[0]:
+            return {}
+        settings = json.loads(row[0])
+        channels = settings.get("telegram", {}).get("channels", [])
+        for channel in channels:
+            if channel.get("mode") == "uploadBot":
+                return channel
+    except Exception as exc:
+        logger.warning("Failed to read ImgBed bot config: %s", exc)
+    return {}
+
+
+def current_allowed_ids() -> set[int]:
+    if ALLOWED_USER_IDS_ENV:
+        return ALLOWED_USER_IDS_ENV
+    cfg = load_web_bot_config()
+    return parse_allowed_ids(str(cfg.get("chatId", "")))
+
+
+def current_api_token() -> str:
+    if IMGBED_API_TOKEN_ENV:
+        return IMGBED_API_TOKEN_ENV
+    return str(load_web_bot_config().get("proxyUrl", "")).strip()
+
+
+def current_bot_token() -> str:
+    if BOT_TOKEN_ENV:
+        return BOT_TOKEN_ENV
+    return str(load_web_bot_config().get("botToken", "")).strip()
+
+
+def current_bot_enabled() -> bool:
+    if BOT_TOKEN_ENV:
+        return True
+    return bool(load_web_bot_config().get("enabled", False))
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
@@ -158,8 +209,9 @@ def reset_settings(user_id: int) -> UserSettings:
 def is_allowed(user_id: Optional[int]) -> bool:
     if user_id is None:
         return False
+    allowed = current_allowed_ids()
     # 安全优先：未配置白名单时不允许上传，只回显用户 ID 方便管理员配置。
-    return bool(ALLOWED_USER_IDS) and user_id in ALLOWED_USER_IDS
+    return bool(allowed) and user_id in allowed
 
 
 async def ensure_allowed(update: Update) -> bool:
@@ -170,7 +222,7 @@ async def ensure_allowed(update: Update) -> bool:
     text = (
         "⛔ 你不在 Bot 白名单中。\n\n"
         f"你的 Telegram User ID：<code>{uid}</code>\n"
-        "请把它加入 <code>ALLOWED_USER_IDS</code> 后重启 Bot。"
+        "请在后台「上传设置 → Telegram Bot 上传配置」中加入该 User ID。"
     )
     if update.callback_query:
         await update.callback_query.answer("无权限", show_alert=True)
@@ -180,7 +232,8 @@ async def ensure_allowed(update: Update) -> bool:
 
 
 def api_headers() -> Dict[str, str]:
-    return {"Authorization": f"Bearer {IMGBED_API_TOKEN}", "Accept": "application/json"}
+    token = current_api_token()
+    return {"Authorization": f"Bearer {token}", "Accept": "application/json"}
 
 
 def api_get_channels() -> Dict[str, List[dict]]:
@@ -322,7 +375,7 @@ def upload_file_sync(data: bytes, filename: str, mime_type: str, settings: UserS
     result = response.json()
     if not isinstance(result, list) or not result or not isinstance(result[0], dict):
         raise RuntimeError(f"Unexpected response: {result!r}")
-    url = result[0].get("src") or result[0].get("publicUrl")
+    url = result[0].get("publicUrl") or result[0].get("src")
     if not url:
         raise RuntimeError(f"Upload response has no URL: {result!r}")
     return normalize_public_url(str(url))
@@ -617,22 +670,25 @@ async def post_init(application: Application) -> None:
     ])
 
 
-def validate_env() -> None:
-    missing = []
-    if not BOT_TOKEN:
-        missing.append("BOT_TOKEN")
-    if not IMGBED_API_TOKEN:
-        missing.append("IMGBED_API_TOKEN")
-    if missing:
-        raise RuntimeError("Missing required environment variables: " + ", ".join(missing))
-    if not ALLOWED_USER_IDS:
-        logger.warning("ALLOWED_USER_IDS is empty: the bot will reject all users until a whitelist is configured")
+def wait_for_runtime_config() -> str:
+    """等待后台完成 Bot 配置。容器可先启动，后台保存后会自动继续。"""
+    while True:
+        token = current_bot_token()
+        api_token = current_api_token()
+        enabled = current_bot_enabled()
+        if enabled and token and api_token:
+            allowed = current_allowed_ids()
+            if not allowed:
+                logger.warning("Telegram Bot 已启用，但允许用户 ID 为空；Bot 将拒绝所有用户")
+            return token
+        logger.info("等待后台 Telegram Bot 配置：需要启用 Bot、填写 Bot Token 和 ImgBed API Token")
+        time.sleep(10)
 
 
 def main() -> None:
-    validate_env()
     init_db()
-    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
+    bot_token = wait_for_runtime_config()
+    app = Application.builder().token(bot_token).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("settings", settings_cmd))
     app.add_handler(CommandHandler("set_storage", storage_cmd))

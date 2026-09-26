@@ -1091,6 +1091,12 @@ async def storage_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await show_channel_picker(update)
 
 
+async def recent_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await ensure_allowed(update):
+        return
+    await show_recent_uploads(update)
+
+
 async def show_channel_picker(update: Update) -> None:
     try:
         channels = await get_channels()
@@ -2048,6 +2054,7 @@ def main() -> None:
     app.add_handler(CommandHandler("settings", settings_cmd))
     app.add_handler(CommandHandler("set_storage", storage_cmd))
     app.add_handler(CommandHandler("me", me))
+    app.add_handler(CommandHandler("recent", recent_cmd))
     app.add_handler(CallbackQueryHandler(callbacks))
     app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.Document.ALL, handle_upload))
     app.add_handler(MessageHandler(

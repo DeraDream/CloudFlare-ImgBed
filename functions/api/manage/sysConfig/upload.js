@@ -28,8 +28,28 @@ export async function onRequest(context) {
     // POST保存设置
     if (request.method === 'POST') {
         const body = await request.json()
-        // Telegram 在此 fork 中仅作为上传入口，不允许保存为存储渠道。
-        body.telegram = { channels: [], loadBalance: { enabled: false, channels: [] } }
+
+        // Telegram 在此 fork 中不是存储渠道，而是 Telegram Bot 上传入口配置。
+        // 前端复用原 Telegram 卡片的数据结构，但后端只保留一个 Bot 配置。
+        const incomingBot = body.telegram?.channels?.[0] || {}
+        body.telegram = {
+            channels: [{
+                id: 1,
+                name: 'Telegram Bot',
+                type: 'telegram',
+                mode: 'uploadBot',
+                savePath: 'database',
+                enabled: Boolean(incomingBot.enabled),
+                fixed: false,
+                botToken: String(incomingBot.botToken || ''),
+                chatId: String(incomingBot.chatId || ''), // 允许的 Telegram User ID，逗号分隔
+                proxyUrl: String(incomingBot.proxyUrl || ''), // ImgBed API Token
+            }],
+            loadBalance: {
+                enabled: false,
+                channels: [],
+            },
+        }
         const settings = body
 
         // 写入数据库
@@ -50,11 +70,23 @@ export async function getUploadConfig(db, env) {
     const settingsStr = await db.get('manage@sysConfig@upload')
     const settingsKV = settingsStr ? JSON.parse(settingsStr) : {}
 
-    // =====================Telegram 仅作为上传入口=====================
-    // 此 fork 不再将 Telegram 作为存储渠道。保留空结构仅用于兼容旧前端/旧配置。
-    // 已存在的 Telegram 存储配置不会再被加载，也不会参与负载均衡。
+    // =====================Telegram Bot 上传入口配置=====================
+    // Telegram 不再参与任何存储/负载均衡，仅在后台保留一个 Bot 配置卡片。
+    // 为避免把旧版 Telegram 存储配置误当成 Bot 配置，只读取 mode=uploadBot 的记录。
+    const storedBot = (settingsKV.telegram?.channels || []).find(ch => ch?.mode === 'uploadBot') || {}
     const telegram = {
-        channels: [],
+        channels: [{
+            id: 1,
+            name: 'Telegram Bot',
+            type: 'telegram',
+            mode: 'uploadBot',
+            savePath: 'database',
+            enabled: Boolean(storedBot.enabled),
+            fixed: false,
+            botToken: storedBot.botToken || '',
+            chatId: storedBot.chatId || '',
+            proxyUrl: storedBot.proxyUrl || '',
+        }],
         loadBalance: {
             enabled: false,
             channels: [],

@@ -15,7 +15,7 @@ from urllib.parse import urlencode, urlparse
 
 import requests
 from PIL import Image, ImageOps
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
 from telegram.constants import ChatAction
 from telegram.ext import (
     Application,
@@ -26,7 +26,7 @@ from telegram.ext import (
     filters,
 )
 
-BOT_VERSION = "v0.2.0"
+BOT_VERSION = "v0.2.1"
 BOT_TOKEN_ENV = os.getenv("BOT_TOKEN", "").strip()
 IMGBED_URL = os.getenv("IMGBED_URL", "http://imgbed:8080").rstrip("/")
 IMGBED_PUBLIC_URL = os.getenv("IMGBED_PUBLIC_URL", "").strip().rstrip("/")
@@ -123,16 +123,16 @@ NAME_LABELS = {
 
 
 def main_menu_keyboard() -> ReplyKeyboardMarkup:
-    """Telegram 原生 Reply Keyboard；展开/收起按钮由 Telegram 客户端负责显示。"""
+    """Telegram 原生 Reply Keyboard。非 persistent 模式允许客户端显示键盘展开/收起控件。"""
     return ReplyKeyboardMarkup(
         [
             [KeyboardButton("⚙️ 上传设置"), KeyboardButton("📦 存储渠道")],
             [KeyboardButton("👤 当前配置"), KeyboardButton("🌐 打开图床")],
-            [KeyboardButton("⬆️ 版本升级")],
+            [KeyboardButton("⬆️ 版本升级"), KeyboardButton("⌨️ 收起菜单")],
         ],
         resize_keyboard=True,
         one_time_keyboard=False,
-        is_persistent=True,
+        is_persistent=False,
         input_field_placeholder="发送图片/文件，或使用快捷按钮",
     )
 
@@ -571,6 +571,15 @@ async def open_web(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+async def hide_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await ensure_allowed(update):
+        return
+    await update.effective_message.reply_text(
+        "⌨️ 快捷菜单已收起。需要时发送 /menu 可重新打开。",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+
+
 async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await ensure_allowed(update):
         return
@@ -585,6 +594,8 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         await open_web(update, context)
     elif text == "⬆️ 版本升级":
         await show_update_status(update)
+    elif text == "⌨️ 收起菜单":
+        await hide_menu(update, context)
 
 
 async def storage_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -826,7 +837,7 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(callbacks))
     app.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, handle_upload))
     app.add_handler(MessageHandler(
-        filters.Regex(r"^(⚙️ 上传设置|📦 存储渠道|👤 当前配置|🌐 打开图床|⬆️ 版本升级)$"),
+        filters.Regex(r"^(⚙️ 上传设置|📦 存储渠道|👤 当前配置|🌐 打开图床|⬆️ 版本升级|⌨️ 收起菜单)$"),
         menu_button_handler,
     ))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, setting_text_input))

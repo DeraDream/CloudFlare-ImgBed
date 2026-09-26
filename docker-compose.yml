@@ -42,6 +42,7 @@ services:
       PROJECT_DIR: ${PROJECT_DIR:-/opt/docker/cloudflare-imgbed}
       REPO_BRANCH: main
       EXPECTED_REPO: DeraDream/CloudFlare-ImgBed
+      REPO_URL: https://github.com/DeraDream/CloudFlare-ImgBed.git
       UPDATE_PORT: 8081
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

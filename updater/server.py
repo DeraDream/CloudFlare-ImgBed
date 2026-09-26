@@ -19,6 +19,7 @@ STATE_FILE = DATA_DIR / "update-state.json"
 LOG_FILE = DATA_DIR / "update-agent.log"
 
 lock = threading.Lock()
+update_thread = None
 state = {
     "updating": False,
     "stage": "idle",
@@ -114,14 +115,51 @@ def validate_repo():
 
 
 def status_payload(fetch=True):
+    global update_thread
+
+    # 如果 updater 容器曾在升级过程中被重启，持久化文件可能仍是 updating=true，
+    # 但新进程里已经没有执行中的升级线程。此时自动恢复，不再永久卡在 deploy。
     with lock:
-        snapshot = dict(state)
+        stale_updating = bool(state.get("updating")) and not (
+            update_thread is not None and update_thread.is_alive()
+        )
+
     try:
         validate_repo()
-        if fetch and not snapshot.get("updating"):
+        if fetch or stale_updating:
             fetch_latest()
+
         current_commit = git("rev-parse", "HEAD", timeout=30).strip()
         latest_commit = git("rev-parse", f"origin/{BRANCH}", timeout=30).strip()
+
+        if stale_updating:
+            running = set(
+                run(
+                    [
+                        "docker", "compose", "-f", str(COMPOSE_FILE),
+                        "ps", "--services", "--filter", "status=running"
+                    ],
+                    timeout=30,
+                    check=False,
+                ).splitlines()
+            )
+            deploy_ok = current_commit == latest_commit and {"imgbed", "telegram-bot"}.issubset(running)
+            with lock:
+                state.update({
+                    "updating": False,
+                    "stage": "done" if deploy_ok else "failed",
+                    "message": (
+                        "升级完成，已从重启中恢复状态"
+                        if deploy_ok
+                        else "升级过程被中断，请重新执行升级"
+                    ),
+                    "finishedAt": now(),
+                    "success": bool(deploy_ok),
+                })
+                persist_state()
+
+        with lock:
+            snapshot = dict(state)
         current_version = read_version()
         latest_version = read_version(f"origin/{BRANCH}")
         dirty = bool(git("status", "--porcelain", "--untracked-files=no", timeout=30).strip())
@@ -275,15 +313,19 @@ class Handler(BaseHTTPRequestHandler):
         self._json(404, {"ok": False, "error": "not found"})
 
     def do_POST(self):
+        global update_thread
         if not self.path.startswith("/update"):
             self._json(404, {"ok": False, "error": "not found"})
             return
-        with lock:
-            if state["updating"]:
-                self._json(409, {"ok": False, "error": "update already running", **state})
-                return
-        thread = threading.Thread(target=do_update, daemon=True)
-        thread.start()
+
+        # 先调用一次状态恢复，避免容器重启后遗留 updating=true 永久阻塞下一次升级。
+        current = status_payload(fetch=True)
+        if current.get("updating"):
+            self._json(409, {"ok": False, "error": "update already running", **current})
+            return
+
+        update_thread = threading.Thread(target=do_update, daemon=True)
+        update_thread.start()
         self._json(202, {
             "ok": True,
             "accepted": True,

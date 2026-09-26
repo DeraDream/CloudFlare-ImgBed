@@ -206,7 +206,7 @@ def do_update():
         ], timeout=3600)
 
         with lock:
-            state.update({"stage": "deploy", "message": "正在切换图床和 Telegram Bot 到新版本"})
+            state.update({"stage": "deploy", "message": "正在重启 ImgBed 与 Telegram Bot 并应用新版本"})
             persist_state()
         run([
             "docker", "compose", "-f", str(COMPOSE_FILE),

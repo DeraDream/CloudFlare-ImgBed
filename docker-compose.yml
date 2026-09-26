@@ -15,13 +15,17 @@ services:
     depends_on:
       - imgbed
     environment:
-      BOT_TOKEN: ${BOT_TOKEN}
+      # BOT_TOKEN / IMGBED_API_TOKEN / ALLOWED_USER_IDS 可选。
+      # 留空时 Bot 会从 ImgBed 后台「Telegram Bot 上传配置」读取。
+      BOT_TOKEN: ${BOT_TOKEN:-}
       IMGBED_URL: http://imgbed:8080
       IMGBED_PUBLIC_URL: ${IMGBED_PUBLIC_URL}
-      IMGBED_API_TOKEN: ${IMGBED_API_TOKEN}
-      ALLOWED_USER_IDS: ${ALLOWED_USER_IDS}
+      IMGBED_API_TOKEN: ${IMGBED_API_TOKEN:-}
+      ALLOWED_USER_IDS: ${ALLOWED_USER_IDS:-}
       REQUEST_TIMEOUT: ${REQUEST_TIMEOUT:-120}
       BOT_DB_PATH: /data/bot.db
+      IMGBED_DB_PATH: /imgbed-data/database.sqlite
     volumes:
       - ./telegram-bot-data:/data
+      - ./data:/imgbed-data:ro
     restart: unless-stopped

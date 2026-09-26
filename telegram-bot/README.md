@@ -35,10 +35,18 @@
 
 ## 命令
 
-- `/start`：开始使用
+- `/start`：开始使用，并显示输入框下方的快捷按钮菜单
+- `/menu`：重新打开快捷按钮菜单
 - `/settings`：完整上传设置
 - `/set_storage`：选择默认存储渠道
 - `/me`：查看当前 Bot 用户和上传配置
+
+Bot 使用 Telegram 原生 Reply Keyboard。发送 `/start` 或 `/menu` 后，会在输入框下方显示两行按钮：
+
+- ⚙️ 上传设置 / 📦 存储渠道
+- 👤 当前配置 / 🌐 打开图床
+
+Telegram 客户端会在输入框旁提供键盘按钮，可随时展开或收起该菜单。
 
 Bot 会调用 `GET /api/channels` 动态读取图床中已经配置并启用的渠道，并主动过滤 Telegram 存储类型。
 

@@ -177,7 +177,6 @@ export async function getPageConfig(db, env) {
             label_en: 'Default Channel Type',
             type: 'select',
             options: [
-                { label: 'Telegram', value: 'telegram' },
                 { label: 'Cloudflare R2', value: 'cfr2' },
                 { label: 'S3', value: 's3' },
                 { label: 'Discord', value: 'discord' },

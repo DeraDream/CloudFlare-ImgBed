@@ -15,7 +15,7 @@ from urllib.parse import urlencode, urlparse
 
 import requests
 from PIL import Image, ImageOps
-from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, Update
 from telegram.constants import ChatAction
 from telegram.ext import (
     Application,
@@ -26,7 +26,7 @@ from telegram.ext import (
     filters,
 )
 
-BOT_VERSION = "v0.1.0"
+BOT_VERSION = "v0.2.0"
 BOT_TOKEN_ENV = os.getenv("BOT_TOKEN", "").strip()
 IMGBED_URL = os.getenv("IMGBED_URL", "http://imgbed:8080").rstrip("/")
 IMGBED_PUBLIC_URL = os.getenv("IMGBED_PUBLIC_URL", "").strip().rstrip("/")
@@ -118,6 +118,20 @@ NAME_LABELS = {
     "origin": "仅原名",
     "short": "短链接",
 }
+
+
+def main_menu_keyboard() -> ReplyKeyboardMarkup:
+    """Telegram 原生 Reply Keyboard：可由输入框旁的键盘按钮展开/收起。"""
+    return ReplyKeyboardMarkup(
+        [
+            [KeyboardButton("⚙️ 上传设置"), KeyboardButton("📦 存储渠道")],
+            [KeyboardButton("👤 当前配置"), KeyboardButton("🌐 打开图床")],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=False,
+        is_persistent=True,
+        input_field_placeholder="发送图片/文件，或点下方菜单",
+    )
 
 
 @dataclass
@@ -438,20 +452,14 @@ async def render_settings(update: Update, settings: Optional[UserSettings] = Non
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await ensure_allowed(update):
         return
-    buttons = [[
-        InlineKeyboardButton("⚙️ 上传设置", callback_data="cfg:home"),
-        InlineKeyboardButton("🌐 打开图床", url=IMGBED_PUBLIC_URL or IMGBED_URL),
-    ]]
     await update.effective_message.reply_text(
         "📌 <b>ImgBed Telegram 上传助手</b>\n\n"
         "直接发送图片或文件即可上传到图床。\n"
         "Telegram 仅作为上传入口，文件最终保存到你选择的本地 / R2 / S3 / WebDAV 等渠道。\n\n"
-        "/settings — 上传设置\n"
-        "/set_storage — 选择存储渠道\n"
-        "/me — 查看当前配置\n\n"
+        "下方已启用快捷菜单，可通过输入框旁的键盘按钮展开/收起。\n\n"
         f"ImgBedTGBot · {BOT_VERSION}",
         parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(buttons),
+        reply_markup=main_menu_keyboard(),
         disable_web_page_preview=True,
     )
 
@@ -472,6 +480,39 @@ async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if not await ensure_allowed(update):
         return
     await render_settings(update)
+
+
+async def menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await ensure_allowed(update):
+        return
+    await update.effective_message.reply_text(
+        "⌨️ 快捷菜单已打开。",
+        reply_markup=main_menu_keyboard(),
+    )
+
+
+async def open_web(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await ensure_allowed(update):
+        return
+    url = IMGBED_PUBLIC_URL or IMGBED_URL
+    await update.effective_message.reply_text(
+        "🌐 打开图床：",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("打开图床", url=url)]]),
+    )
+
+
+async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await ensure_allowed(update):
+        return
+    text = (update.effective_message.text or "").strip()
+    if text == "⚙️ 上传设置":
+        await render_settings(update)
+    elif text == "📦 存储渠道":
+        await show_channel_picker(update)
+    elif text == "👤 当前配置":
+        await me(update, context)
+    elif text == "🌐 打开图床":
+        await open_web(update, context)
 
 
 async def storage_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -664,6 +705,7 @@ async def handle_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 async def post_init(application: Application) -> None:
     await application.bot.set_my_commands([
         BotCommand("start", "开始使用"),
+        BotCommand("menu", "打开快捷菜单"),
         BotCommand("settings", "上传设置"),
         BotCommand("set_storage", "选择默认存储渠道"),
         BotCommand("me", "查看当前配置"),
@@ -690,11 +732,16 @@ def main() -> None:
     bot_token = wait_for_runtime_config()
     app = Application.builder().token(bot_token).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("menu", menu_cmd))
     app.add_handler(CommandHandler("settings", settings_cmd))
     app.add_handler(CommandHandler("set_storage", storage_cmd))
     app.add_handler(CommandHandler("me", me))
     app.add_handler(CallbackQueryHandler(callbacks))
     app.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, handle_upload))
+    app.add_handler(MessageHandler(
+        filters.Regex(r"^(⚙️ 上传设置|📦 存储渠道|👤 当前配置|🌐 打开图床)$"),
+        menu_button_handler,
+    ))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, setting_text_input))
     logger.info("ImgBed Telegram Bot %s started", BOT_VERSION)
     app.run_polling(drop_pending_updates=True)

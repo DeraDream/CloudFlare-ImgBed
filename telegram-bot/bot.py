@@ -1314,22 +1314,63 @@ def progress_bar(percent: float, width: int = 12) -> str:
     return "█" * filled + "░" * (width - filled)
 
 
+class UploadProcessError(Exception):
+    def __init__(self, history_id: int, cause: Exception):
+        super().__init__(str(cause))
+        self.history_id = int(history_id)
+        self.cause = cause
+
+
 class UploadProgressReporter:
     def __init__(self, message, filename: str):
         self.message = message
         self.filename = filename
         self.queue = asyncio.Queue(maxsize=1)
         self.task = None
-        self.last_percent = -1
+        self.last_percent = -1.0
         self.last_phase = ""
         self.last_edit_at = 0.0
+        self.batch_index = 1
+        self.batch_total = 1
+        self.transfer_phase = ""
+        self.transfer_started_at = 0.0
+        self.transfer_start_bytes = 0
+
+    def set_item(self, index: int, total: int, filename: str):
+        self.batch_index = max(1, int(index))
+        self.batch_total = max(1, int(total))
+        self.filename = filename
+        self.transfer_phase = ""
+        self.transfer_started_at = 0.0
+        self.transfer_start_bytes = 0
+        self.last_phase = ""
+
+    def _global_percent(self, local_percent: float) -> float:
+        local_percent = max(0.0, min(100.0, float(local_percent)))
+        return (
+            ((self.batch_index - 1) + local_percent / 100.0)
+            / max(1, self.batch_total)
+            * 100.0
+        )
 
     async def start(self):
-        self.task = asyncio.create_task(self._worker())
+        if self.task is None:
+            self.task = asyncio.create_task(self._worker())
         await self.report(1, "准备处理")
 
-    def _enqueue(self, percent: float, phase: str):
-        item = (max(0.0, min(100.0, percent)), phase)
+    def _enqueue(
+        self,
+        local_percent: float,
+        phase: str,
+        transferred: int = 0,
+        total: int = 0,
+    ):
+        item = (
+            self._global_percent(local_percent),
+            phase,
+            max(0, int(transferred or 0)),
+            max(0, int(total or 0)),
+        )
         if self.queue.full():
             try:
                 self.queue.get_nowait()
@@ -1340,11 +1381,30 @@ class UploadProgressReporter:
         except asyncio.QueueFull:
             pass
 
-    def emit_from_thread(self, loop, percent: float, phase: str):
-        loop.call_soon_threadsafe(self._enqueue, percent, phase)
+    def emit_transfer_from_thread(
+        self,
+        loop,
+        local_percent: float,
+        phase: str,
+        transferred: int,
+        total: int,
+    ):
+        loop.call_soon_threadsafe(
+            self._enqueue,
+            local_percent,
+            phase,
+            transferred,
+            total,
+        )
 
-    async def report(self, percent: float, phase: str):
-        self._enqueue(percent, phase)
+    async def report(
+        self,
+        local_percent: float,
+        phase: str,
+        transferred: int = 0,
+        total: int = 0,
+    ):
+        self._enqueue(local_percent, phase, transferred, total)
         await asyncio.sleep(0)
 
     async def _worker(self):
@@ -1352,25 +1412,59 @@ class UploadProgressReporter:
             item = await self.queue.get()
             if item is None:
                 return
-            percent, phase = item
+
+            percent, phase, transferred, total = item
             now = time.monotonic()
             should_edit = (
-                percent >= 99
+                percent >= 99.5
                 or phase != self.last_phase
-                or percent - self.last_percent >= 3
+                or percent - self.last_percent >= 2
                 or now - self.last_edit_at >= 1.0
             )
             if not should_edit:
                 continue
+
+            speed = 0.0
+            eta = None
+            if transferred > 0 and total > 0:
+                if phase != self.transfer_phase:
+                    self.transfer_phase = phase
+                    self.transfer_started_at = now
+                    self.transfer_start_bytes = 0
+                elapsed = max(0.001, now - self.transfer_started_at)
+                moved = max(0, transferred - self.transfer_start_bytes)
+                if elapsed >= 0.25 and moved > 0:
+                    speed = moved / elapsed
+                    if speed > 0 and total >= transferred:
+                        eta = (total - transferred) / speed
+
             self.last_percent = percent
             self.last_phase = phase
             self.last_edit_at = now
+
+            lines = [
+                "📤 <b>上传进度</b>",
+                "",
+                f"<code>{progress_bar(percent)}</code> {percent:.0f}%",
+            ]
+            if self.batch_total > 1:
+                lines.append(f"相册：{self.batch_index}/{self.batch_total}")
+            lines.append(f"阶段：{html.escape(phase)}")
+            if transferred > 0 and total > 0:
+                line = (
+                    f"数据：{format_bytes(transferred)} / {format_bytes(total)}"
+                )
+                lines.append(line)
+                if speed > 0:
+                    speed_line = f"速度：{format_bytes(int(speed))}/s"
+                    if eta is not None:
+                        speed_line += f" · ETA {format_eta(eta)}"
+                    lines.append(speed_line)
+            lines.append(f"文件：<code>{html.escape(self.filename)}</code>")
+
             try:
                 await self.message.edit_text(
-                    "📤 <b>上传进度</b>\n\n"
-                    f"<code>{progress_bar(percent)}</code> {percent:.0f}%\n"
-                    f"阶段：{html.escape(phase)}\n"
-                    f"文件：<code>{html.escape(self.filename)}</code>",
+                    "\n".join(lines),
                     parse_mode="HTML",
                 )
             except Exception:
@@ -1389,6 +1483,7 @@ class UploadProgressReporter:
             await self.task
         except Exception:
             pass
+        self.task = None
 
 
 def download_stream_sync(url: str, expected_size: int, progress_callback=None) -> bytes:
@@ -1396,128 +1491,517 @@ def download_stream_sync(url: str, expected_size: int, progress_callback=None) -
     downloaded = 0
     with requests.get(url, stream=True, timeout=REQUEST_TIMEOUT) as response:
         response.raise_for_status()
-        total = expected_size or int(response.headers.get("Content-Length") or 0)
+        total = int(expected_size or response.headers.get("Content-Length") or 0)
         for chunk in response.iter_content(chunk_size=256 * 1024):
             if not chunk:
                 continue
             chunks.append(chunk)
             downloaded += len(chunk)
-            if progress_callback and total > 0:
-                progress_callback(min(1.0, downloaded / total))
+            if progress_callback:
+                progress_callback(downloaded, total)
     if progress_callback:
-        progress_callback(1.0)
+        progress_callback(downloaded, total or downloaded)
     return b"".join(chunks)
 
 
-async def download_telegram_file(update: Update, reporter=None) -> Tuple[bytes, str, str]:
-    message = update.effective_message
-    media = None
-    filename = ""
-    mime = "application/octet-stream"
-    expected_size = 0
-
-    if message.photo:
-        media = message.photo[-1]
-        filename = f"{media.file_unique_id}.jpg"
-        mime = "image/jpeg"
-        expected_size = int(media.file_size or 0)
-    elif message.video:
-        media = message.video
-        filename = media.file_name or f"{media.file_unique_id}.mp4"
-        mime = media.mime_type or "video/mp4"
-        expected_size = int(media.file_size or 0)
-    elif message.document:
-        media = message.document
-        filename = media.file_name or f"{media.file_unique_id}"
-        mime = media.mime_type or mimetypes.guess_type(filename)[0] or "application/octet-stream"
-        expected_size = int(media.file_size or 0)
-    else:
-        raise ValueError("不支持的消息类型")
-
+async def download_source(bot, source: dict, reporter=None) -> bytes:
     if reporter:
-        reporter.filename = filename
+        reporter.filename = source["filename"]
         await reporter.report(3, "正在获取 Telegram 文件")
 
-    tg_file = await media.get_file()
+    tg_file = await bot.get_file(source["file_id"])
     file_url = str(tg_file.file_path or "")
     if not file_url:
         raise RuntimeError("Telegram 未返回文件下载地址")
     if not file_url.startswith(("http://", "https://")):
-        file_url = f"https://api.telegram.org/file/bot{current_bot_token()}/{file_url.lstrip('/')}"
+        file_url = (
+            f"https://api.telegram.org/file/bot{current_bot_token()}/"
+            f"{file_url.lstrip('/')}"
+        )
 
     loop = asyncio.get_running_loop()
 
-    def progress(fraction: float):
+    def progress(transferred: int, total: int):
         if reporter:
-            reporter.emit_from_thread(loop, 5 + fraction * 30, "正在从 Telegram 下载")
+            fraction = transferred / total if total else 0.0
+            reporter.emit_transfer_from_thread(
+                loop,
+                5 + fraction * 30,
+                "正在从 Telegram 下载",
+                transferred,
+                total,
+            )
 
-    data = await asyncio.to_thread(
+    return await asyncio.to_thread(
         download_stream_sync,
         file_url,
-        expected_size,
+        int(source.get("expected_size") or 0),
         progress,
     )
-    return data, filename, mime
 
 
-async def handle_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await ensure_allowed(update):
-        return
+def create_pending_history(
+    source: dict,
+    settings: UserSettings,
+    user_id: int,
+    chat_id: int,
+    upload_folder: str,
+) -> int:
+    return create_history(
+        DB_PATH,
+        {
+            "user_id": int(user_id),
+            "chat_id": int(chat_id),
+            "message_id": int(source.get("message_id") or 0),
+            "media_group_id": source.get("media_group_id") or "",
+            "source_file_id": source.get("file_id") or "",
+            "source_unique_id": source.get("file_unique_id") or "",
+            "original_name": source.get("filename") or "",
+            "final_name": source.get("filename") or "",
+            "mime_type": source.get("mime_type") or "application/octet-stream",
+            "original_size": int(source.get("expected_size") or 0),
+            "final_size": 0,
+            "width": int(source.get("width") or 0),
+            "height": int(source.get("height") or 0),
+            "duration": int(source.get("duration") or 0),
+            "channel_type": settings.channel_type,
+            "channel_name": settings.channel_name,
+            "upload_folder": upload_folder,
+            "tags": source.get("tags") or [],
+            "note": source.get("note") or "",
+            "status": "pending",
+            "settings_json": asdict(settings),
+        },
+    )
+
+
+def source_from_history(row) -> dict:
+    return {
+        "file_id": row["source_file_id"] or "",
+        "file_unique_id": row["source_unique_id"] or "",
+        "filename": row["original_name"] or row["final_name"] or "telegram-file",
+        "mime_type": row["mime_type"] or "application/octet-stream",
+        "expected_size": int(row["original_size"] or 0),
+        "width": int(row["width"] or 0),
+        "height": int(row["height"] or 0),
+        "duration": int(row["duration"] or 0),
+        "caption": "",
+        "tags": decode_tags(row),
+        "note": row["note"] or "",
+        "message_id": int(row["message_id"] or 0),
+        "media_group_id": row["media_group_id"] or "",
+    }
+
+
+def upload_result_text(row) -> str:
+    duplicate = int(row["is_duplicate"] or 0)
+    title = "⚡ <b>秒传成功！</b>" if duplicate else "✅ <b>上传成功！</b>"
+    text = title + "\n\n" + history_info_text(row, compact=True)
+    if row["url"]:
+        text += f"\n\n🔗 URL:\n<code>{html.escape(row['url'])}</code>"
+        filename = row["final_name"] or row["original_name"] or "file"
+        if (row["mime_type"] or "").startswith("image/"):
+            markdown = f"![]({row['url']})"
+        else:
+            markdown = f"[{filename}]({row['url']})"
+        text += f"\n\n📝 Markdown:\n<code>{html.escape(markdown)}</code>"
+    return text
+
+
+def upload_result_keyboard(row) -> InlineKeyboardMarkup:
+    rows = []
+    if row["url"]:
+        rows.append([InlineKeyboardButton("🔗 打开链接", url=row["url"])])
+    rows.append([
+        InlineKeyboardButton("🏷 标签/备注", callback_data=f"meta:{row['id']}"),
+        InlineKeyboardButton("🕘 最近上传", callback_data="recent:0"),
+    ])
+    rows.append([InlineKeyboardButton("⚙️ 上传设置", callback_data="cfg:home")])
+    return InlineKeyboardMarkup(rows)
+
+
+def upload_failure_keyboard(history_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔄 重新上传", callback_data=f"retry:{history_id}")],
+        [InlineKeyboardButton("🕘 最近上传", callback_data="recent:0")],
+    ])
+
+
+async def process_source_upload(
+    application: Application,
+    source: dict,
+    settings: UserSettings,
+    user_id: int,
+    chat_id: int,
+    reporter: UploadProgressReporter,
+    *,
+    history_id: Optional[int] = None,
+    upload_folder_override: Optional[str] = None,
+):
+    upload_folder = normalize_folder(
+        upload_folder_override or effective_upload_folder(settings)
+    )
+
+    if history_id is None:
+        history_id = create_pending_history(
+            source,
+            settings,
+            user_id,
+            chat_id,
+            upload_folder,
+        )
+    else:
+        update_history(
+            DB_PATH,
+            history_id,
+            status="pending",
+            error="",
+            channel_type=settings.channel_type,
+            channel_name=settings.channel_name,
+            upload_folder=upload_folder,
+            settings_json=asdict(settings),
+        )
+
+    try:
+        data = await download_source(application.bot, source, reporter)
+        original_size = len(data)
+
+        if (source.get("mime_type") or "").startswith("image/"):
+            await reporter.report(38, "正在处理图片")
+            processed, filename, mime = await asyncio.to_thread(
+                preprocess_file,
+                data,
+                source["filename"],
+                source["mime_type"],
+                settings,
+            )
+        else:
+            processed = data
+            filename = source["filename"]
+            mime = source["mime_type"]
+            await reporter.report(42, "正在准备视频/文件上传")
+
+        final_size = len(processed)
+        media_info = get_image_info(
+            processed,
+            mime,
+            int(source.get("width") or 0),
+            int(source.get("height") or 0),
+        )
+        width = media_info["width"] or int(source.get("width") or 0)
+        height = media_info["height"] or int(source.get("height") or 0)
+        sha256 = hashlib.sha256(processed).hexdigest()
+
+        update_history(
+            DB_PATH,
+            history_id,
+            original_size=original_size,
+            final_size=final_size,
+            final_name=filename,
+            mime_type=mime,
+            width=width,
+            height=height,
+            duration=int(source.get("duration") or 0),
+            sha256=sha256,
+        )
+
+        await reporter.report(44, "正在进行 SHA-256 查重")
+        duplicate = find_duplicate(
+            DB_PATH,
+            sha256=sha256,
+            channel_type=settings.channel_type,
+            channel_name=settings.channel_name,
+            upload_folder=upload_folder,
+            exclude_id=history_id,
+        )
+
+        if duplicate:
+            url = str(duplicate["url"])
+            await reporter.report(98, "查重命中，秒传完成")
+            is_duplicate = 1
+        else:
+            await reporter.report(45, "正在上传到图床")
+            url = await upload_file(
+                processed,
+                filename,
+                mime,
+                settings,
+                upload_folder,
+                reporter,
+            )
+            is_duplicate = 0
+
+        update_history(
+            DB_PATH,
+            history_id,
+            status="success",
+            error="",
+            url=url,
+            is_duplicate=is_duplicate,
+            final_size=final_size,
+            final_name=filename,
+            mime_type=mime,
+        )
+        await reporter.report(99, "正在生成访问链接")
+        return get_history(DB_PATH, history_id, user_id)
+
+    except Exception as exc:
+        update_history(
+            DB_PATH,
+            history_id,
+            status="failed",
+            error=str(exc)[:1000],
+        )
+        raise UploadProcessError(history_id, exc) from exc
+
+
+async def handle_single_upload(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    source: dict,
+) -> None:
     uid = update.effective_user.id
     settings = get_settings(uid)
     if not settings.channel_type or not settings.channel_name:
         await update.effective_message.reply_text(
             "⚠️ 还没有选择存储渠道，请先使用 /set_storage。",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📦 选择存储渠道", callback_data="cfg:channel")]]),
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("📦 选择存储渠道", callback_data="cfg:channel")
+            ]]),
         )
         return
 
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.UPLOAD_DOCUMENT)
+    await context.bot.send_chat_action(
+        chat_id=update.effective_chat.id,
+        action=ChatAction.UPLOAD_DOCUMENT,
+    )
     status = await update.effective_message.reply_text("📤 正在准备上传…")
-    reporter = UploadProgressReporter(status, "Telegram 文件")
+    reporter = UploadProgressReporter(status, source["filename"])
+    reporter.set_item(1, 1, source["filename"])
     await reporter.start()
 
     try:
-        data, filename, mime = await download_telegram_file(update, reporter)
-
-        if mime.startswith("image/"):
-            await reporter.report(38, "正在处理图片")
-            processed, filename, mime = await asyncio.to_thread(
-                preprocess_file, data, filename, mime, settings
-            )
-        else:
-            processed = data
-            await reporter.report(42, "正在准备视频/文件上传")
-
-        reporter.filename = filename
-        await reporter.report(45, "正在上传到图床")
-        url = await upload_file(processed, filename, mime, settings, reporter)
-        await reporter.report(99, "正在生成访问链接")
-        await asyncio.sleep(0.2)
-        await reporter.stop()
-
-        text = (
-            "✅ <b>上传成功！</b>\n\n"
-            f"🔗 URL:\n<code>{html.escape(url)}</code>\n\n"
-            f"📝 Markdown:\n<code>![]({html.escape(url)})</code>"
+        row = await process_source_upload(
+            context.application,
+            source,
+            settings,
+            uid,
+            update.effective_chat.id,
+            reporter,
         )
+        await asyncio.sleep(0.15)
+        await reporter.stop()
         await status.edit_text(
-            text,
+            upload_result_text(row),
             parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔗 打开链接", url=url)],
-                [InlineKeyboardButton("⚙️ 上传设置", callback_data="cfg:home")],
-            ]),
+            reply_markup=upload_result_keyboard(row),
             disable_web_page_preview=True,
         )
-    except Exception as exc:
+    except UploadProcessError as exc:
         logger.exception("Upload failed")
         await reporter.stop()
+        row = get_history(DB_PATH, exc.history_id, uid)
         await status.edit_text(
             "❌ <b>上传失败</b>\n\n"
-            f"<code>{html.escape(str(exc))}</code>",
+            + (history_info_text(row, compact=True) + "\n\n" if row else "")
+            + f"<code>{html.escape(str(exc.cause))}</code>",
             parse_mode="HTML",
+            reply_markup=upload_failure_keyboard(exc.history_id),
         )
+
+
+async def flush_media_group(
+    application: Application,
+    key,
+) -> None:
+    try:
+        await asyncio.sleep(1.2)
+    except asyncio.CancelledError:
+        return
+
+    buffers = application.bot_data.setdefault("album_buffers", {})
+    entry = buffers.pop(key, None)
+    if not entry:
+        return
+
+    updates = sorted(entry["updates"], key=lambda item: item.effective_message.message_id)
+    if not updates:
+        return
+
+    first = updates[0]
+    uid = first.effective_user.id
+    settings = get_settings(uid)
+    if not settings.channel_type or not settings.channel_name:
+        await first.effective_message.reply_text(
+            "⚠️ 相册未上传：还没有选择存储渠道，请先设置。",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("📦 选择存储渠道", callback_data="cfg:channel")
+            ]]),
+        )
+        return
+
+    sources = [media_source_from_message(item.effective_message) for item in updates]
+    album_tags = []
+    album_note = ""
+    for source in sources:
+        if source["tags"] or source["note"]:
+            album_tags = source["tags"]
+            album_note = source["note"]
+            break
+    if album_tags or album_note:
+        for source in sources:
+            source["tags"] = list(album_tags)
+            source["note"] = album_note
+
+    status = await first.effective_message.reply_text(
+        f"📤 正在上传相册，共 {len(sources)} 个文件…"
+    )
+    reporter = UploadProgressReporter(status, sources[0]["filename"])
+    reporter.set_item(1, len(sources), sources[0]["filename"])
+    await reporter.start()
+
+    results = []
+    failures = []
+    for index, source in enumerate(sources, start=1):
+        reporter.set_item(index, len(sources), source["filename"])
+        await reporter.report(1, f"准备第 {index}/{len(sources)} 个文件")
+        try:
+            row = await process_source_upload(
+                application,
+                source,
+                settings,
+                uid,
+                first.effective_chat.id,
+                reporter,
+            )
+            results.append(row)
+        except UploadProcessError as exc:
+            row = get_history(DB_PATH, exc.history_id, uid)
+            failures.append((row, exc))
+
+    await reporter.stop()
+
+    lines = [
+        "🖼 <b>相册上传完成</b>",
+        "",
+        f"成功：<b>{len(results)}</b> / {len(sources)}",
+    ]
+    if failures:
+        lines.append(f"失败：<b>{len(failures)}</b>")
+    lines.append("")
+
+    for row in results:
+        name = row["final_name"] or row["original_name"] or "file"
+        icon = "⚡" if int(row["is_duplicate"] or 0) else "✅"
+        lines.append(
+            f'{icon} <a href="{html.escape(row["url"], quote=True)}">'
+            f"{html.escape(name)}</a>"
+        )
+    for row, exc in failures:
+        name = row["original_name"] if row else "file"
+        lines.append(f"❌ {html.escape(name)} · {html.escape(str(exc.cause)[:120])}")
+
+    buttons = [[InlineKeyboardButton("🕘 最近上传", callback_data="recent:0")]]
+    for row, _ in failures[:5]:
+        if row:
+            buttons.append([
+                InlineKeyboardButton(
+                    f"🔄 重试 {row['original_name'] or row['id']}",
+                    callback_data=f"retry:{row['id']}",
+                )
+            ])
+
+    await status.edit_text(
+        "\n".join(lines),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(buttons),
+        disable_web_page_preview=True,
+    )
+
+
+async def enqueue_media_group(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    key = (
+        int(update.effective_chat.id),
+        str(update.effective_message.media_group_id),
+    )
+    buffers = context.application.bot_data.setdefault("album_buffers", {})
+    entry = buffers.setdefault(key, {"updates": [], "task": None})
+    entry["updates"].append(update)
+
+    task = entry.get("task")
+    if task and not task.done():
+        task.cancel()
+
+    entry["task"] = context.application.create_task(
+        flush_media_group(context.application, key)
+    )
+
+
+async def retry_history_upload(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    history_id: int,
+) -> None:
+    uid = update.effective_user.id
+    row = get_history(DB_PATH, history_id, uid)
+    if not row:
+        raise ValueError("上传记录不存在")
+    if not row["source_file_id"]:
+        raise ValueError("该记录没有可重试的 Telegram 文件 ID")
+
+    settings_data = decode_settings(row)
+    settings = settings_from_snapshot(uid, settings_data)
+    source = source_from_history(row)
+
+    query = update.callback_query
+    await query.edit_message_text("📤 正在重新上传…")
+    reporter = UploadProgressReporter(query.message, source["filename"])
+    reporter.set_item(1, 1, source["filename"])
+    await reporter.start()
+
+    try:
+        result = await process_source_upload(
+            context.application,
+            source,
+            settings,
+            uid,
+            query.message.chat_id,
+            reporter,
+            history_id=history_id,
+            upload_folder_override=row["upload_folder"] or "/",
+        )
+        await reporter.stop()
+        await query.message.edit_text(
+            upload_result_text(result),
+            parse_mode="HTML",
+            reply_markup=upload_result_keyboard(result),
+            disable_web_page_preview=True,
+        )
+    except UploadProcessError as exc:
+        await reporter.stop()
+        failed = get_history(DB_PATH, exc.history_id, uid)
+        await query.message.edit_text(
+            "❌ <b>重新上传失败</b>\n\n"
+            + (history_info_text(failed, compact=True) + "\n\n" if failed else "")
+            + f"<code>{html.escape(str(exc.cause))}</code>",
+            parse_mode="HTML",
+            reply_markup=upload_failure_keyboard(exc.history_id),
+        )
+
+
+async def handle_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await ensure_allowed(update):
+        return
+
+    if update.effective_message.media_group_id:
+        await enqueue_media_group(update, context)
+        return
+
+    source = media_source_from_message(update.effective_message)
+    await handle_single_upload(update, context, source)
 
 
 async def post_init(application: Application) -> None:

@@ -1,5 +1,13 @@
 # DeraDream Fork Changelog
 
+## 2.7.6-dd.5
+
+- Telegram 输入上传目录、压缩阈值、期望大小后立即返回“设置成功”反馈。
+- 上传目录允许直接输入 `/telegram`、`/images` 等以斜杠开头的值，不再被 Telegram 当作未知命令吞掉。
+- 版本检查在已是最新版时明确提示“当前已经是最新版本，无需升级”。
+- 升级 deploy 阶段文案改为“正在重启 ImgBed 与 Telegram Bot 并应用新版本”，避免“切换”含义不清。
+- Bot 版本更新为 v0.3.1。
+
 ## 2.7.6-dd.4
 
 - Telegram 内触发升级后自动持续跟踪升级状态。

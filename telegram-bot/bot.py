@@ -880,12 +880,13 @@ def upload_file_sync(
     filename: str,
     mime_type: str,
     settings: UserSettings,
+    upload_folder: str,
     progress_callback=None,
 ) -> str:
     params = {
         "uploadChannel": settings.channel_type,
         "channelName": settings.channel_name,
-        "uploadFolder": settings.upload_folder or "/",
+        "uploadFolder": upload_folder or "/",
         "autoRetry": "true" if settings.auto_retry else "false",
         "uploadNameType": settings.name_type,
         "returnFormat": "full",
@@ -898,7 +899,7 @@ def upload_file_sync(
 
     def on_upload(monitor):
         if progress_callback and monitor.len:
-            progress_callback(min(1.0, monitor.bytes_read / monitor.len))
+            progress_callback(int(monitor.bytes_read), int(monitor.len))
 
     monitor = MultipartEncoderMonitor(encoder, on_upload)
     headers = api_headers()
@@ -926,13 +927,21 @@ async def upload_file(
     filename: str,
     mime_type: str,
     settings: UserSettings,
+    upload_folder: str,
     reporter=None,
 ) -> str:
     loop = asyncio.get_running_loop()
 
-    def progress(fraction: float):
+    def progress(transferred: int, total: int):
         if reporter:
-            reporter.emit_from_thread(loop, 45 + fraction * 53, "正在上传到图床")
+            fraction = (transferred / total) if total else 0.0
+            reporter.emit_transfer_from_thread(
+                loop,
+                45 + fraction * 53,
+                "正在上传到图床",
+                transferred,
+                total,
+            )
 
     return await asyncio.to_thread(
         upload_file_sync,
@@ -940,6 +949,7 @@ async def upload_file(
         filename,
         mime_type,
         settings,
+        upload_folder,
         progress,
     )
 

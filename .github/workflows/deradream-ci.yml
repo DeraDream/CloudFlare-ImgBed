@@ -13,7 +13,7 @@ jobs:
 
       - name: Python syntax
         run: |
-          python3 -m py_compile telegram-bot/bot.py updater/server.py
+          python3 -m py_compile telegram-bot/bot.py telegram-bot/history_store.py updater/server.py
 
 
       - name: Build Telegram bot image

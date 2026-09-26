@@ -442,7 +442,12 @@ def history_info_text(row, *, compact: bool = False) -> str:
         lines.append(f"{history_status_icon(row)} <b>{html.escape(filename)}</b>")
 
     if int(row["width"] or 0) and int(row["height"] or 0):
-        lines.append(f"🖼 {row['width']}×{row['height']} · <code>{html.escape(mime)}</code>")
+        kind = "🖼" if mime.startswith("image/") else "🎞"
+        format_name = mime.split("/", 1)[-1].upper() if "/" in mime else mime.upper()
+        media_line = f"{kind} {row['width']}×{row['height']} · <code>{html.escape(format_name)}</code>"
+        if int(row["duration"] or 0):
+            media_line += f" · {format_eta(int(row['duration']))}"
+        lines.append(media_line)
     else:
         lines.append(f"📄 <code>{html.escape(mime)}</code>")
 
@@ -454,7 +459,9 @@ def history_info_text(row, *, compact: bool = False) -> str:
             size_line += f" · 原始 {format_bytes(original_size)}"
         lines.append(size_line)
 
-    channel = f"{row['channel_type'] or ''} / {row['channel_name'] or ''}".strip(" /")
+    channel_type = row["channel_type"] or ""
+    channel_label = CHANNEL_LABELS.get(channel_type, channel_type)
+    channel = f"{channel_label} / {row['channel_name'] or ''}".strip(" /")
     if channel:
         lines.append(f"☁️ {html.escape(channel)}")
     if row["upload_folder"]:
@@ -1430,7 +1437,7 @@ class UploadProgressReporter:
                 if phase != self.transfer_phase:
                     self.transfer_phase = phase
                     self.transfer_started_at = now
-                    self.transfer_start_bytes = 0
+                    self.transfer_start_bytes = transferred
                 elapsed = max(0.001, now - self.transfer_started_at)
                 moved = max(0, transferred - self.transfer_start_bytes)
                 if elapsed >= 0.25 and moved > 0:
@@ -1580,7 +1587,11 @@ def source_from_history(row) -> dict:
         "file_id": row["source_file_id"] or "",
         "file_unique_id": row["source_unique_id"] or "",
         "filename": row["original_name"] or row["final_name"] or "telegram-file",
-        "mime_type": row["mime_type"] or "application/octet-stream",
+        "mime_type": (
+            mimetypes.guess_type(row["original_name"] or "")[0]
+            or row["mime_type"]
+            or "application/octet-stream"
+        ),
         "expected_size": int(row["original_size"] or 0),
         "width": int(row["width"] or 0),
         "height": int(row["height"] or 0),

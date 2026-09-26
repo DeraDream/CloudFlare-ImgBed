@@ -28,6 +28,8 @@ export async function onRequest(context) {
     // POST保存设置
     if (request.method === 'POST') {
         const body = await request.json()
+        // Telegram 在此 fork 中仅作为上传入口，不允许保存为存储渠道。
+        body.telegram = { channels: [], loadBalance: { enabled: false, channels: [] } }
         const settings = body
 
         // 写入数据库
@@ -48,47 +50,16 @@ export async function getUploadConfig(db, env) {
     const settingsStr = await db.get('manage@sysConfig@upload')
     const settingsKV = settingsStr ? JSON.parse(settingsStr) : {}
 
-    // =====================读取tg渠道配置=====================
-    const telegram = {}
-
-    const telegramChannels = []
-    telegram.channels = telegramChannels
-    if (env.TG_BOT_TOKEN) {
-        telegramChannels.push({
-            id: 1,
-            name: 'Telegram_env',
-            type: 'telegram',
-            savePath: 'environment variable',
-            botToken: env.TG_BOT_TOKEN,
-            chatId: env.TG_CHAT_ID,
-            proxyUrl: env.TG_PROXY_URL || '',  // 可选的代理 URL
-            enabled: true,
-            fixed: true,
-        })
-    }
-    for (const tg of settingsKV.telegram?.channels || []) {
-        // 如果savePath是environment variable，修改可变参数
-        if (tg.savePath === 'environment variable') {
-            // 如果环境变量未删除，进行覆盖操作
-            if (telegramChannels[0]) {
-                telegramChannels[0].enabled = tg.enabled
-                telegramChannels[0].proxyUrl = tg.proxyUrl
-            }
-
-            continue
-        }
-        // id自增
-        tg.id = telegramChannels.length + 1
-        telegramChannels.push(tg)
-    }
-
-    // 负载均衡
-    const tgLoadBalance = settingsKV.telegram?.loadBalance || {
-        enabled: false,
+    // =====================Telegram 仅作为上传入口=====================
+    // 此 fork 不再将 Telegram 作为存储渠道。保留空结构仅用于兼容旧前端/旧配置。
+    // 已存在的 Telegram 存储配置不会再被加载，也不会参与负载均衡。
+    const telegram = {
         channels: [],
+        loadBalance: {
+            enabled: false,
+            channels: [],
+        },
     }
-    telegram.loadBalance = tgLoadBalance
-
 
 
     // =====================读取r2渠道配置=====================

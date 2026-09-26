@@ -33,7 +33,10 @@ export async function initializeChunkedUpload(context) {
         const ipAddress = await getIPAddress(env, uploadIp, context.securityConfig);
 
         // 获取上传渠道
-        const uploadChannel = url.searchParams.get('uploadChannel') || 'telegram';
+        const uploadChannel = url.searchParams.get('uploadChannel') || 'cfr2';
+        if (uploadChannel === 'telegram') {
+            return createResponse('Error: Telegram storage is disabled in this fork.', { status: 400 });
+        }
         if (uploadChannel === 'webdav') {
             return createResponse('Error: WebDAV channel does not support chunked uploads. Please use non-chunked upload within your Cloudflare request body limit.', { status: 400 });
         }
@@ -124,7 +127,7 @@ export async function handleChunkUpload(context) {
         }
 
         // 获取上传渠道
-        const uploadChannel = url.searchParams.get('uploadChannel') || sessionInfo.uploadChannel || 'telegram';
+        const uploadChannel = url.searchParams.get('uploadChannel') || sessionInfo.uploadChannel || 'cfr2';
         if (uploadChannel === 'webdav') {
             return createResponse('Error: WebDAV channel does not support chunked uploads. Please use non-chunked upload within your Cloudflare request body limit.', { status: 400 });
         }

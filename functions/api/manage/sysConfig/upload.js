@@ -35,7 +35,7 @@ export async function onRequest(context) {
         body.telegram = {
             channels: [{
                 id: 1,
-                name: 'Telegram Bot',
+                name: String(incomingBot.name || 'Telegram Bot').trim() || 'Telegram Bot',
                 type: 'telegram',
                 mode: 'uploadBot',
                 savePath: 'database',
@@ -77,7 +77,7 @@ export async function getUploadConfig(db, env) {
     const telegram = {
         channels: [{
             id: 1,
-            name: 'Telegram Bot',
+            name: storedBot.name || 'Telegram Bot',
             type: 'telegram',
             mode: 'uploadBot',
             savePath: 'database',

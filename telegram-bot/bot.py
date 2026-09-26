@@ -15,7 +15,7 @@ from urllib.parse import urlencode, urlparse
 
 import requests
 from PIL import Image, ImageOps
-from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, Update
 from telegram.constants import ChatAction
 from telegram.ext import (
     Application,
@@ -34,6 +34,8 @@ IMGBED_API_TOKEN_ENV = os.getenv("IMGBED_API_TOKEN", "").strip()
 DB_PATH = os.getenv("BOT_DB_PATH", "/data/bot.db")
 IMGBED_DB_PATH = os.getenv("IMGBED_DB_PATH", "/imgbed-data/database.sqlite")
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "120"))
+UPDATE_AGENT_URL = os.getenv("UPDATE_AGENT_URL", "http://updater:8081").rstrip("/")
+APP_VERSION = os.getenv("APP_VERSION", "").strip()
 
 
 def parse_allowed_ids(raw: str) -> set[int]:
@@ -121,16 +123,17 @@ NAME_LABELS = {
 
 
 def main_menu_keyboard() -> ReplyKeyboardMarkup:
-    """Telegram 原生 Reply Keyboard：可由输入框旁的键盘按钮展开/收起。"""
+    """Telegram 原生 Reply Keyboard；展开/收起按钮由 Telegram 客户端负责显示。"""
     return ReplyKeyboardMarkup(
         [
             [KeyboardButton("⚙️ 上传设置"), KeyboardButton("📦 存储渠道")],
             [KeyboardButton("👤 当前配置"), KeyboardButton("🌐 打开图床")],
+            [KeyboardButton("⬆️ 版本升级")],
         ],
         resize_keyboard=True,
         one_time_keyboard=False,
         is_persistent=True,
-        input_field_placeholder="发送图片/文件，或点下方菜单",
+        input_field_placeholder="发送图片/文件，或使用快捷按钮",
     )
 
 
@@ -265,6 +268,73 @@ def api_get_channels() -> Dict[str, List[dict]]:
 
 async def get_channels() -> Dict[str, List[dict]]:
     return await asyncio.to_thread(api_get_channels)
+
+
+def updater_status_sync() -> dict:
+    response = requests.get(f"{UPDATE_AGENT_URL}/status", timeout=150)
+    response.raise_for_status()
+    return response.json()
+
+
+async def updater_status() -> dict:
+    return await asyncio.to_thread(updater_status_sync)
+
+
+def updater_start_sync() -> dict:
+    response = requests.post(f"{UPDATE_AGENT_URL}/update", timeout=15)
+    if response.status_code not in (200, 202, 409):
+        response.raise_for_status()
+    return response.json()
+
+
+async def updater_start() -> dict:
+    return await asyncio.to_thread(updater_start_sync)
+
+
+def update_status_text(data: dict) -> str:
+    if not data.get("ok"):
+        return "⬆️ <b>版本升级</b>\n\n❌ 无法获取版本信息：<code>" + html.escape(str(data.get("error", "unknown"))) + "</code>"
+    current = data.get("currentVersion") or APP_VERSION or "unknown"
+    latest = data.get("latestVersion") or "unknown"
+    current_commit = data.get("currentShort") or ""
+    latest_commit = data.get("latestShort") or ""
+    if data.get("updating"):
+        status = "⏳ " + str(data.get("message") or "正在升级")
+    elif data.get("updateAvailable"):
+        status = "🆕 发现新版本"
+    else:
+        status = "✅ 当前已是最新版本"
+    return (
+        "⬆️ <b>版本升级</b>\n\n"
+        f"当前版本：<code>{html.escape(str(current))}</code>"
+        + (f" ({html.escape(str(current_commit))})" if current_commit else "")
+        + "\n"
+        f"最新版本：<code>{html.escape(str(latest))}</code>"
+        + (f" ({html.escape(str(latest_commit))})" if latest_commit else "")
+        + "\n\n"
+        + status
+    )
+
+
+def update_keyboard(data: dict) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton("🔄 检查更新", callback_data="upd:check")]]
+    if data.get("updateAvailable") and not data.get("updating"):
+        rows.insert(0, [InlineKeyboardButton("⬆️ 立即升级", callback_data="upd:run")])
+    return InlineKeyboardMarkup(rows)
+
+
+async def show_update_status(update: Update) -> None:
+    try:
+        data = await updater_status()
+        text = update_status_text(data)
+        markup = update_keyboard(data)
+    except Exception as exc:
+        text = "⬆️ <b>版本升级</b>\n\n❌ 更新服务不可用：<code>" + html.escape(str(exc)) + "</code>"
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 重试", callback_data="upd:check")]])
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, parse_mode="HTML", reply_markup=markup)
+    else:
+        await update.effective_message.reply_text(text, parse_mode="HTML", reply_markup=markup)
 
 
 def flatten_channels(channels: Dict[str, List[dict]]) -> List[Tuple[str, str]]:
@@ -513,6 +583,8 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         await me(update, context)
     elif text == "🌐 打开图床":
         await open_web(update, context)
+    elif text == "⬆️ 版本升级":
+        await show_update_status(update)
 
 
 async def storage_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -609,6 +681,26 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         except Exception as exc:
             logger.exception("Failed to choose channel")
             await query.edit_message_text(f"❌ 渠道选择失败：<code>{html.escape(str(exc))}</code>", parse_mode="HTML")
+    elif data == "upd:check":
+        await show_update_status(update)
+    elif data == "upd:run":
+        try:
+            result = await updater_start()
+            if result.get("accepted") or result.get("ok"):
+                await query.edit_message_text(
+                    "⬆️ <b>升级任务已开始</b>\n\n"
+                    "正在从 GitHub 拉取最新代码并重新构建容器。\n"
+                    "图床和 Bot 可能短暂重启，约几十秒到几分钟后恢复。",
+                    parse_mode="HTML",
+                )
+            else:
+                raise RuntimeError(result.get("error") or "升级请求失败")
+        except Exception as exc:
+            await query.edit_message_text(
+                "❌ 升级启动失败：<code>" + html.escape(str(exc)) + "</code>",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 重试", callback_data="upd:check")]]),
+            )
 
 
 async def setting_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -703,13 +795,8 @@ async def handle_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def post_init(application: Application) -> None:
-    await application.bot.set_my_commands([
-        BotCommand("start", "开始使用"),
-        BotCommand("menu", "打开快捷菜单"),
-        BotCommand("settings", "上传设置"),
-        BotCommand("set_storage", "选择默认存储渠道"),
-        BotCommand("me", "查看当前配置"),
-    ])
+    # 删除 Telegram 左侧“菜单/命令”入口。Reply Keyboard 的展开/收起由客户端输入框旁按钮控制。
+    await application.bot.delete_my_commands()
 
 
 def wait_for_runtime_config() -> str:
@@ -739,7 +826,7 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(callbacks))
     app.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, handle_upload))
     app.add_handler(MessageHandler(
-        filters.Regex(r"^(⚙️ 上传设置|📦 存储渠道|👤 当前配置|🌐 打开图床)$"),
+        filters.Regex(r"^(⚙️ 上传设置|📦 存储渠道|👤 当前配置|🌐 打开图床|⬆️ 版本升级)$"),
         menu_button_handler,
     ))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, setting_text_input))

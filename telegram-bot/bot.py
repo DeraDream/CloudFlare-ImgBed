@@ -372,6 +372,188 @@ def get_image_info(data: bytes, mime_type: str, fallback_width: int = 0, fallbac
     return info
 
 
+def media_source_from_message(message) -> dict:
+    media = None
+    filename = ""
+    mime = "application/octet-stream"
+    width = 0
+    height = 0
+    duration = 0
+
+    if message.photo:
+        media = message.photo[-1]
+        filename = f"{media.file_unique_id}.jpg"
+        mime = "image/jpeg"
+        width = int(media.width or 0)
+        height = int(media.height or 0)
+    elif message.video:
+        media = message.video
+        filename = media.file_name or f"{media.file_unique_id}.mp4"
+        mime = media.mime_type or "video/mp4"
+        width = int(media.width or 0)
+        height = int(media.height or 0)
+        duration = int(message.video.duration or 0)
+    elif message.document:
+        media = message.document
+        filename = media.file_name or str(media.file_unique_id)
+        mime = media.mime_type or mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    else:
+        raise ValueError("不支持的消息类型")
+
+    tags, note = parse_caption_metadata(message.caption or "")
+    return {
+        "file_id": media.file_id,
+        "file_unique_id": media.file_unique_id,
+        "filename": filename,
+        "mime_type": mime,
+        "expected_size": int(media.file_size or 0),
+        "width": width,
+        "height": height,
+        "duration": duration,
+        "caption": message.caption or "",
+        "tags": tags,
+        "note": note,
+        "message_id": int(message.message_id),
+        "media_group_id": str(message.media_group_id or ""),
+    }
+
+
+def history_time(timestamp: int) -> str:
+    try:
+        return datetime.fromtimestamp(int(timestamp), LOCAL_TZ).strftime("%m-%d %H:%M")
+    except Exception:
+        return "--"
+
+
+def history_status_icon(row) -> str:
+    if row["status"] == "success":
+        return "⚡" if int(row["is_duplicate"] or 0) else "✅"
+    if row["status"] == "failed":
+        return "❌"
+    return "⏳"
+
+
+def history_info_text(row, *, compact: bool = False) -> str:
+    tags = decode_tags(row)
+    filename = row["final_name"] or row["original_name"] or "未命名文件"
+    mime = row["mime_type"] or "application/octet-stream"
+    lines = []
+    if not compact:
+        lines.append(f"{history_status_icon(row)} <b>{html.escape(filename)}</b>")
+
+    if int(row["width"] or 0) and int(row["height"] or 0):
+        lines.append(f"🖼 {row['width']}×{row['height']} · <code>{html.escape(mime)}</code>")
+    else:
+        lines.append(f"📄 <code>{html.escape(mime)}</code>")
+
+    final_size = int(row["final_size"] or 0)
+    original_size = int(row["original_size"] or 0)
+    if final_size:
+        size_line = f"📦 {format_bytes(final_size)}"
+        if original_size and original_size != final_size:
+            size_line += f" · 原始 {format_bytes(original_size)}"
+        lines.append(size_line)
+
+    channel = f"{row['channel_type'] or ''} / {row['channel_name'] or ''}".strip(" /")
+    if channel:
+        lines.append(f"☁️ {html.escape(channel)}")
+    if row["upload_folder"]:
+        lines.append(f"📁 <code>{html.escape(row['upload_folder'])}</code>")
+    if int(row["is_duplicate"] or 0):
+        lines.append("⚡ SHA-256 查重命中 · 秒传")
+    if tags:
+        lines.append("🏷 " + " ".join("#" + html.escape(tag) for tag in tags))
+    if row["note"]:
+        lines.append("📝 " + html.escape(str(row["note"])))
+    if row["status"] == "failed" and row["error"]:
+        lines.append("❌ " + html.escape(str(row["error"])[:500]))
+    return "\n".join(lines)
+
+
+def history_detail_keyboard(row, page: int = 0) -> InlineKeyboardMarkup:
+    rows = []
+    if row["status"] == "success" and row["url"]:
+        rows.append([InlineKeyboardButton("🔗 打开链接", url=row["url"])])
+    if row["status"] == "failed":
+        rows.append([InlineKeyboardButton("🔄 重新上传", callback_data=f"retry:{row['id']}")])
+    rows.append([InlineKeyboardButton("🏷 标签/备注", callback_data=f"meta:{row['id']}")])
+    rows.append([InlineKeyboardButton("⬅️ 最近上传", callback_data=f"recent:{page}")])
+    return InlineKeyboardMarkup(rows)
+
+
+async def show_recent_uploads(update: Update, page: int = 0) -> None:
+    uid = update.effective_user.id
+    page = max(0, int(page))
+    per_page = 5
+    rows, total = list_history(DB_PATH, uid, limit=per_page, offset=page * per_page)
+    max_page = max(0, (total - 1) // per_page) if total else 0
+    if page > max_page:
+        page = max_page
+        rows, total = list_history(DB_PATH, uid, limit=per_page, offset=page * per_page)
+
+    if not rows:
+        text = "🕘 <b>最近上传</b>\n\n暂无上传记录。"
+        markup = None
+    else:
+        text_lines = [f"🕘 <b>最近上传</b> · 第 {page + 1}/{max_page + 1} 页", ""]
+        buttons = []
+        for index, row in enumerate(rows, start=1):
+            name = row["final_name"] or row["original_name"] or "未命名文件"
+            if len(name) > 26:
+                name = name[:23] + "…"
+            text_lines.append(
+                f"{history_status_icon(row)} {index}. {html.escape(name)}"
+                f" · {format_bytes(int(row['final_size'] or row['original_size'] or 0))}"
+                f" · {history_time(row['created_at'])}"
+            )
+            buttons.append([
+                InlineKeyboardButton(
+                    f"{history_status_icon(row)} {index}. {name}",
+                    callback_data=f"hist:{row['id']}:{page}",
+                )
+            ])
+
+        nav = []
+        if page > 0:
+            nav.append(InlineKeyboardButton("⬅️ 上一页", callback_data=f"recent:{page - 1}"))
+        if page < max_page:
+            nav.append(InlineKeyboardButton("下一页 ➡️", callback_data=f"recent:{page + 1}"))
+        if nav:
+            buttons.append(nav)
+        text = "\n".join(text_lines)
+        markup = InlineKeyboardMarkup(buttons)
+
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, parse_mode="HTML", reply_markup=markup)
+    else:
+        await update.effective_message.reply_text(text, parse_mode="HTML", reply_markup=markup)
+
+
+async def show_history_detail(update: Update, history_id: int, page: int = 0) -> None:
+    row = get_history(DB_PATH, history_id, update.effective_user.id)
+    if not row:
+        if update.callback_query:
+            await update.callback_query.answer("记录不存在", show_alert=True)
+        return
+    text = history_info_text(row)
+    if row["status"] == "success" and row["url"]:
+        text += f"\n\n🔗 URL:\n<code>{html.escape(row['url'])}</code>"
+    if update.callback_query:
+        await update.callback_query.edit_message_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=history_detail_keyboard(row, page),
+            disable_web_page_preview=True,
+        )
+    else:
+        await update.effective_message.reply_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=history_detail_keyboard(row, page),
+            disable_web_page_preview=True,
+        )
+
+
 def is_allowed(user_id: Optional[int]) -> bool:
     if user_id is None or not current_bot_enabled():
         return False

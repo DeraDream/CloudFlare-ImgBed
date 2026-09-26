@@ -12,6 +12,7 @@ PORT = int(os.getenv("UPDATE_PORT", "8081"))
 PROJECT_DIR = Path(os.getenv("PROJECT_DIR", "/opt/docker/cloudflare-imgbed")).resolve()
 BRANCH = os.getenv("REPO_BRANCH", "main")
 EXPECTED_REPO = os.getenv("EXPECTED_REPO", "DeraDream/CloudFlare-ImgBed")
+REPO_URL = os.getenv("REPO_URL", "https://github.com/DeraDream/CloudFlare-ImgBed.git")
 COMPOSE_FILE = PROJECT_DIR / "docker-compose.yml"
 DATA_DIR = PROJECT_DIR / "data"
 STATE_FILE = DATA_DIR / "update-state.json"
@@ -70,6 +71,17 @@ def git(*args, timeout=120):
     return run(["git", "-C", str(PROJECT_DIR), *args], timeout=timeout)
 
 
+def fetch_latest():
+    # 固定通过公开 HTTPS 地址拉取，避免部署仓库 origin 使用 git@github.com 时依赖 SSH Key。
+    git(
+        "fetch",
+        "--quiet",
+        REPO_URL,
+        f"+refs/heads/{BRANCH}:refs/remotes/origin/{BRANCH}",
+        timeout=180,
+    )
+
+
 def read_version(ref=None):
     try:
         if ref:
@@ -97,7 +109,7 @@ def status_payload(fetch=True):
     try:
         validate_repo()
         if fetch and not snapshot.get("updating"):
-            git("fetch", "--quiet", "origin", BRANCH, timeout=120)
+            fetch_latest()
         current_commit = git("rev-parse", "HEAD", timeout=30).strip()
         latest_commit = git("rev-parse", f"origin/{BRANCH}", timeout=30).strip()
         current_version = read_version()
@@ -149,7 +161,11 @@ def do_update():
         with lock:
             state.update({"stage": "fetch", "message": "正在获取 GitHub 最新版本"})
             persist_state()
-        git("fetch", "origin", BRANCH, timeout=180)
+        fetch_latest()
+
+        dirty = git("status", "--porcelain", "--untracked-files=no", timeout=30).strip()
+        if dirty:
+            raise RuntimeError("检测到部署目录存在已修改的 Git 跟踪文件，为避免覆盖本地改动，已拒绝自动升级")
 
         latest = git("rev-parse", f"origin/{BRANCH}", timeout=30).strip()
         if previous == latest:

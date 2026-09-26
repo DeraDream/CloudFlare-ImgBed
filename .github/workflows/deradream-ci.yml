@@ -15,6 +15,44 @@ jobs:
         run: |
           python3 -m py_compile telegram-bot/bot.py updater/server.py
 
+
+      - name: Build Telegram bot image
+        run: |
+          docker build -t deradream-imgbed-bot:test telegram-bot
+
+      - name: Telegram bot feature smoke test
+        run: |
+          docker run --rm \
+            -e BOT_DB_PATH=/tmp/bot-test.db \
+            -e BOT_TIMEZONE=Asia/Shanghai \
+            --entrypoint python \
+            deradream-imgbed-bot:test -c "
+          import bot
+          from history_store import create_history, find_duplicate, get_history, update_history
+          bot.init_db()
+          tags, note = bot.parse_caption_metadata('#服务器 #截图 测试备注')
+          assert tags == ['服务器', '截图'], (tags, note)
+          assert note == '测试备注', note
+          s = bot.update_settings(10001, upload_folder='/telegram', auto_date_dir=True)
+          folder = bot.effective_upload_folder(s)
+          assert folder.startswith('/telegram/'), folder
+          hid = create_history(bot.DB_PATH, {
+              'user_id': 10001, 'chat_id': 10001, 'original_name': 'a.jpg',
+              'final_name': 'a.jpg', 'mime_type': 'image/jpeg',
+              'channel_type': 's3', 'channel_name': 'cloudflare',
+              'upload_folder': folder, 'sha256': 'abc',
+              'url': 'https://img.example.com/a.jpg', 'status': 'success'
+          })
+          row = find_duplicate(
+              bot.DB_PATH, sha256='abc', channel_type='s3',
+              channel_name='cloudflare', upload_folder=folder
+          )
+          assert row and row['id'] == hid
+          update_history(bot.DB_PATH, hid, tags=['x'], note='n')
+          assert get_history(bot.DB_PATH, hid)['note'] == 'n'
+          print('telegram feature smoke test: OK')
+          "
+
       - name: Frontend bundle syntax
         run: |
           node --check frontend-dist/js/app.1e4229a6.js

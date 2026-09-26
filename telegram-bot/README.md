@@ -41,12 +41,13 @@
 - `/set_storage`：选择默认存储渠道
 - `/me`：查看当前 Bot 用户和上传配置
 
-Bot 使用 Telegram 原生 Reply Keyboard。发送 `/start` 或 `/menu` 后，会在输入框下方显示两行按钮：
+Bot 使用 Telegram 原生 Reply Keyboard。发送 `/start` 或手动输入 `/menu` 后，会在输入框下方显示快捷按钮：
 
 - ⚙️ 上传设置 / 📦 存储渠道
 - 👤 当前配置 / 🌐 打开图床
+- ⬆️ 版本升级
 
-Telegram 客户端会在输入框旁提供键盘按钮，可随时展开或收起该菜单。
+Bot 会主动删除 Telegram 的命令菜单，因此左侧蓝色「菜单」入口不会保留。Reply Keyboard 的展开/收起按钮由 Telegram 客户端原生提供，按钮具体位于输入框哪一侧由客户端决定，通常会显示为键盘图标。
 
 Bot 会调用 `GET /api/channels` 动态读取图床中已经配置并启用的渠道，并主动过滤 Telegram 存储类型。
 
@@ -74,3 +75,20 @@ WebP 和压缩在 Bot 侧完成，然后再调用 ImgBed `/upload`：
 ## 致谢
 
 Telegram 交互设计参考了 lhl77/ImgTGBot 的使用体验，但本实现为 CloudFlare-ImgBed API 独立编写。
+
+
+## 在线升级
+
+Docker 部署新增内部 `updater` 服务。Web 后台的「系统版本」卡片会打开 `/update.html`，Telegram Bot 的「⬆️ 版本升级」也会访问同一个内部更新服务。
+
+更新流程：
+
+1. 检查 `DeraDream/CloudFlare-ImgBed` 的 `main`。
+2. 拉取最新代码。
+3. 本地重新构建 ImgBed 与 Telegram Bot。
+4. 成功构建后才替换正在运行的容器。
+5. 最后刷新 updater 自身。
+
+`data/`、SQLite、Telegram Bot 设置和 `.env` 不会被删除。
+
+> 第一次启用在线升级功能仍需在服务器上更新到包含 `updater` 服务的版本一次；之后可以直接通过 Web 或 Telegram 升级。

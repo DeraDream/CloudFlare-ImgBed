@@ -42,6 +42,19 @@
 
 Bot 会调用 `GET /api/channels` 动态读取图床中已经配置并启用的渠道，并主动过滤 Telegram 存储类型。
 
+## Web 后台配置 Bot
+
+Docker 版可以直接在 **系统设置 → 上传设置 → Telegram Bot 上传** 卡片中点击「编辑」配置：
+
+- **Bot Token**：BotFather 生成的 Token
+- **允许用户 ID**：允许使用 Bot 的 Telegram User ID，多个用逗号分隔
+- **ImgBed API Token**：建议使用仅含 `upload` 权限的 ImgBed API Token
+- **启用开关**：打开后 Bot 容器会自动检测配置并开始运行
+
+Telegram 不会出现在「添加存储渠道」或首页「上传渠道」中，它只作为上传入口。
+
+环境变量 `BOT_TOKEN`、`IMGBED_API_TOKEN`、`ALLOWED_USER_IDS` 仍可作为高级覆盖项；若留空，则以 Web 后台配置为准。
+
 ## 图片预处理
 
 WebP 和压缩在 Bot 侧完成，然后再调用 ImgBed `/upload`：

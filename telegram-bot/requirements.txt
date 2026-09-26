@@ -1,3 +1,4 @@
 python-telegram-bot==21.6
 requests>=2.32.0,<3
 Pillow>=10.4.0,<12
+requests-toolbelt>=1.0.0,<2

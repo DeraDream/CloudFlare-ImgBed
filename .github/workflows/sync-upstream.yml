@@ -5,9 +5,9 @@ permissions:
   actions: write
   issues: write
 
+# This fork contains custom Telegram upload changes.
+# Keep upstream sync manual-only so scheduled syncs cannot unexpectedly overwrite or conflict with local changes.
 on:
-  schedule:
-    - cron: "0 0 * * *" # every day
   workflow_dispatch:
     inputs:
       confirm_breaking_update:

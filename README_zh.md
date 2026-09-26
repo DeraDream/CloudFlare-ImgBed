@@ -68,6 +68,39 @@ CloudFlare ImgBed 是支持 Docker 与 Serverless 部署的自建图床和文件
   </tr>
 </table>
 
+## 🤖 本 Fork：Telegram 作为上传入口
+
+本 Fork 将 Telegram 从“存储渠道”改为“上传入口”。Telegram Bot 收到图片或文件后，会调用 CloudFlare-ImgBed 的上传 API，并将文件保存到你在图床中配置的本地 R2_env、S3 / Cloudflare R2、WebDAV、Hugging Face、Discord 等实际存储渠道。
+
+Bot **不需要图床登录**，由服务端持有一个仅具备 `upload` 权限的 API Token，并通过 `ALLOWED_USER_IDS` 控制允许使用的 Telegram 用户。
+
+Bot 支持：
+
+- 直接发送图片或文件上传
+- `/settings` 在 Telegram 内配置上传参数
+- `/set_storage` 选择默认存储渠道
+- 上传目录
+- 自动切换
+- 默认 / 仅前缀 / 仅原名 / 短链接命名方式
+- WebP 转换
+- 图片压缩、压缩阈值、期望大小
+- 上传后返回 URL / Markdown / BBCode
+- SQLite 持久化每个 Telegram 用户的上传偏好
+
+部署前复制环境变量模板：
+
+```bash
+cp .env.example .env
+```
+
+填写 `BOT_TOKEN`、`IMGBED_API_TOKEN`、`ALLOWED_USER_IDS`、`IMGBED_PUBLIC_URL` 后：
+
+```bash
+docker compose up -d --build
+```
+
+详细说明见 [telegram-bot/README.md](telegram-bot/README.md)。
+
 # 2. 🖥️ 在线演示
 
 **演示站点**：[CloudFlare ImgBed](https://cfbed.1314883.xyz/) · **访问密码**：`cfbed`

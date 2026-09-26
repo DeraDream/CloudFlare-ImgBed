@@ -1060,6 +1060,8 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         await show_channel_picker(update)
     elif text == "👤 当前配置":
         await me(update, context)
+    elif text == "🕘 最近上传":
+        await show_recent_uploads(update)
     elif text == "🌐 打开图床":
         await open_web(update, context)
     elif text == "⬆️ 版本升级":
@@ -1162,6 +1164,49 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         except Exception as exc:
             logger.exception("Failed to choose channel")
             await query.edit_message_text(f"❌ 渠道选择失败：<code>{html.escape(str(exc))}</code>", parse_mode="HTML")
+    elif data.startswith("recent:"):
+        try:
+            page = int(data.split(":", 1)[1])
+        except Exception:
+            page = 0
+        await show_recent_uploads(update, page)
+    elif data.startswith("hist:"):
+        try:
+            _, history_id, page = data.split(":", 2)
+            await show_history_detail(update, int(history_id), int(page))
+        except Exception:
+            await query.answer("记录参数无效", show_alert=True)
+    elif data.startswith("meta:"):
+        try:
+            history_id = int(data.split(":", 1)[1])
+            row = get_history(DB_PATH, history_id, uid)
+            if not row:
+                raise ValueError("记录不存在")
+            context.user_data["awaiting_history_meta"] = history_id
+            tags = decode_tags(row)
+            current = " ".join("#" + tag for tag in tags)
+            if row["note"]:
+                current = (current + " " + str(row["note"])).strip()
+            await query.edit_message_text(
+                "🏷 <b>编辑标签 / 备注</b>\n\n"
+                "发送格式示例：\n"
+                "<code>#服务器 #截图 这是今天的测试图</code>\n\n"
+                "标签使用 # 开头，其余文字作为备注。\n"
+                "发送 <code>-</code> 可清空。"
+                + (f"\n\n当前：<code>{html.escape(current)}</code>" if current else ""),
+                parse_mode="HTML",
+            )
+        except Exception as exc:
+            await query.answer(str(exc), show_alert=True)
+    elif data.startswith("retry:"):
+        try:
+            history_id = int(data.split(":", 1)[1])
+            await retry_history_upload(update, context, history_id)
+        except Exception as exc:
+            await query.edit_message_text(
+                "❌ 重试失败：<code>" + html.escape(str(exc)) + "</code>",
+                parse_mode="HTML",
+            )
     elif data == "upd:check":
         await show_update_status(update)
     elif data == "upd:run":
@@ -1191,11 +1236,34 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def setting_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await ensure_allowed(update):
         return
+
+    uid = update.effective_user.id
+    value = (update.effective_message.text or "").strip()
+
+    history_id = context.user_data.pop("awaiting_history_meta", None)
+    if history_id is not None:
+        if value == "-":
+            tags, note = [], ""
+        else:
+            tags, note = parse_caption_metadata(value)
+        if not update_tags_note(DB_PATH, int(history_id), uid, tags, note):
+            await update.effective_message.reply_text("❌ 记录不存在或无权限。")
+            return
+        await update.effective_message.reply_text("✅ 标签 / 备注已保存。")
+        row = get_history(DB_PATH, int(history_id), uid)
+        if row:
+            await update.effective_message.reply_text(
+                history_info_text(row)
+                + (f"\n\n🔗 URL:\n<code>{html.escape(row['url'])}</code>" if row["url"] else ""),
+                parse_mode="HTML",
+                reply_markup=history_detail_keyboard(row),
+                disable_web_page_preview=True,
+            )
+        return
+
     awaiting = context.user_data.pop("awaiting_setting", None)
     if not awaiting:
         return
-    uid = update.effective_user.id
-    value = (update.effective_message.text or "").strip()
     try:
         if awaiting == "folder":
             folder = value or "/"
@@ -1478,7 +1546,7 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(callbacks))
     app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.Document.ALL, handle_upload))
     app.add_handler(MessageHandler(
-        filters.Regex(r"^(⚙️ 上传设置|📦 存储渠道|👤 当前配置|🌐 打开图床|⬆️ 版本升级)$"),
+        filters.Regex(r"^(⚙️ 上传设置|📦 存储渠道|👤 当前配置|🕘 最近上传|🌐 打开图床|⬆️ 版本升级)$"),
         menu_button_handler,
     ))
     # 设置输入允许以 / 开头，例如上传目录 /telegram；未知斜杠文本也可作为设置值处理。

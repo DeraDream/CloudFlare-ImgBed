@@ -22,6 +22,7 @@ ENV NODE_ENV=production
 
 COPY --from=dependencies /app/node_modules ./node_modules
 COPY package.json ./
+COPY VERSION ./VERSION
 COPY deploy/profiles ./deploy/profiles
 COPY frontend-dist ./frontend-dist
 COPY functions ./functions

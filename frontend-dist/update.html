@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>ImgBed 版本升级</title>
+<style>
+:root{color-scheme:dark;--bg:#0d0f12;--card:#15181d;--line:#292e36;--text:#f3f5f7;--muted:#9299a5;--accent:#657ee8;--good:#45c47a;--warn:#e9aa45;--bad:#ef6666}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.55 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+.wrap{max-width:820px;margin:0 auto;padding:36px 18px 80px}.head{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:22px}.title{font-size:28px;font-weight:750}.sub{color:var(--muted);margin-top:4px}.back{color:#b9c3ff;text-decoration:none}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px;margin-bottom:16px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.item{padding:16px;border:1px solid var(--line);border-radius:12px}.label{color:var(--muted);font-size:12px}.value{font-size:20px;font-weight:700;margin-top:5px;word-break:break-all}
+.status{display:inline-flex;align-items:center;gap:8px;padding:6px 10px;border-radius:999px;background:#20242b;color:var(--muted)}.dot{width:8px;height:8px;border-radius:50%;background:var(--muted)}
+.status.good .dot{background:var(--good)}.status.warn .dot{background:var(--warn)}.status.bad .dot{background:var(--bad)}
+.actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px}button{border:0;border-radius:10px;padding:10px 16px;font-weight:650;cursor:pointer;background:#252a32;color:var(--text)}button.primary{background:var(--accent)}button:disabled{opacity:.5;cursor:not-allowed}
+.note{color:var(--muted);margin-top:14px}.log{white-space:pre-wrap;background:#0a0c0f;border:1px solid var(--line);border-radius:12px;padding:14px;max-height:320px;overflow:auto;color:#b7bdc8;font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace}
+@media(max-width:600px){.grid{grid-template-columns:1fr}.title{font-size:23px}.wrap{padding-top:22px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="head">
+    <div><div class="title">版本升级</div><div class="sub">DeraDream / CloudFlare-ImgBed</div></div>
+    <a class="back" href="/admin">← 返回后台</a>
+  </div>
+  <div class="card">
+    <div id="state" class="status"><span class="dot"></span><span>正在检查版本…</span></div>
+    <div class="grid" style="margin-top:16px">
+      <div class="item"><div class="label">当前版本</div><div id="current" class="value">--</div><div id="currentCommit" class="label"></div></div>
+      <div class="item"><div class="label">最新版本</div><div id="latest" class="value">--</div><div id="latestCommit" class="label"></div></div>
+    </div>
+    <div class="actions">
+      <button id="check" onclick="refreshStatus()">检查更新</button>
+      <button id="upgrade" class="primary" onclick="startUpdate()" disabled>立即升级</button>
+    </div>
+    <div class="note">升级会从你的 GitHub Fork 拉取 <code>main</code> 最新代码，本地重新构建并切换 ImgBed 与 Telegram Bot。<code>data/</code>、数据库和 <code>.env</code> 不会被删除。升级过程中服务可能短暂断开。</div>
+  </div>
+  <div class="card">
+    <div style="font-weight:700;margin-bottom:10px">升级日志</div>
+    <div id="log" class="log">暂无日志</div>
+  </div>
+</div>
+<script>
+let polling=null;
+const $=id=>document.getElementById(id);
+function setState(kind,text){const el=$('state');el.className='status '+(kind||'');el.querySelector('span:last-child').textContent=text}
+function render(data){
+  if(!data||!data.ok){setState('bad',data?.error||'无法获取版本信息');$('upgrade').disabled=true;return}
+  $('current').textContent=data.currentVersion||'unknown';
+  $('latest').textContent=data.latestVersion||'unknown';
+  $('currentCommit').textContent=data.currentShort?'Commit '+data.currentShort:'';
+  $('latestCommit').textContent=data.latestShort?'Commit '+data.latestShort:'';
+  $('log').textContent=(data.logTail&&data.logTail.length)?data.logTail.join('\n'):'暂无日志';
+  if(data.updating){
+    setState('warn',data.message||'正在升级…');
+    $('upgrade').disabled=true;
+    startPolling();
+  }else if(data.updateAvailable){
+    setState('warn','发现新版本');
+    $('upgrade').disabled=false;
+  }else{
+    setState('good',data.success===false?'上次升级失败；当前代码已是最新提交':'当前已是最新版本');
+    $('upgrade').disabled=true;
+    if(polling){clearInterval(polling);polling=null}
+  }
+}
+async function refreshStatus(){
+  $('check').disabled=true;
+  try{
+    const r=await fetch('/api/manage/update',{credentials:'same-origin',cache:'no-store'});
+    if(r.status===401){location.href='/adminLogin';return}
+    render(await r.json());
+  }catch(e){setState('bad','连接失败，服务可能正在重启：'+e.message)}
+  finally{$('check').disabled=false}
+}
+async function startUpdate(){
+  if(!confirm('确定升级到 GitHub main 最新版本？升级期间服务会短暂重启。'))return;
+  $('upgrade').disabled=true;setState('warn','正在提交升级任务…');
+  try{
+    const r=await fetch('/api/manage/update',{method:'POST',credentials:'same-origin'});
+    const data=await r.json();
+    if(!r.ok&&!data.accepted)throw new Error(data.error||'升级请求失败');
+    setState('warn',data.message||'升级任务已开始');
+    startPolling();
+  }catch(e){setState('bad',e.message)}
+}
+function startPolling(){
+  if(polling)return;
+  polling=setInterval(refreshStatus,3500);
+}
+refreshStatus();
+</script>
+</body></html>

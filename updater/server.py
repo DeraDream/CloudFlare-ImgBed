@@ -261,16 +261,45 @@ def do_update():
             })
             persist_state()
 
-        # 最后更新 updater 自身。这个命令可能导致当前容器被替换，因此放在全部升级完成之后。
+        # 最后更新 updater 自身。
+        #
+        # 不能在 updater 容器内部直接执行 "docker compose up updater"：
+        # Compose 会停止当前容器，连同正在执行 Compose 的进程一起杀掉，
+        # 容易留下半重建容器 / 名称冲突，最终导致 service DNS "updater" 永久消失。
+        #
+        # 这里先构建新 updater 镜像，再启动一个独立 helper 容器。
+        # helper 与当前 updater 不同容器，因此当前 updater 被替换时 helper 仍会继续
+        # 完成 compose up，确保 updater 最终重新上线。
         try:
             run([
                 "docker", "compose", "-f", str(COMPOSE_FILE),
                 "build", "--pull", "updater"
             ], timeout=1800)
-            run([
+
+            updater_image = run([
                 "docker", "compose", "-f", str(COMPOSE_FILE),
-                "up", "-d", "--no-deps", "--no-build", "updater"
-            ], timeout=300)
+                "images", "-q", "updater"
+            ], timeout=30).splitlines()[0].strip()
+            if not updater_image:
+                raise RuntimeError("cannot resolve newly built updater image")
+
+            helper_name = f"imgbed-updater-refresh-{now()}"
+            helper_script = (
+                "sleep 3; "
+                f"cd {str(PROJECT_DIR)!r}; "
+                f"docker compose -f {str(COMPOSE_FILE)!r} "
+                "up -d --no-deps --no-build updater"
+            )
+            run([
+                "docker", "run", "--rm", "-d",
+                "--name", helper_name,
+                "-v", "/var/run/docker.sock:/var/run/docker.sock",
+                "-v", f"{PROJECT_DIR}:{PROJECT_DIR}",
+                "-w", str(PROJECT_DIR),
+                updater_image,
+                "sh", "-c", helper_script,
+            ], timeout=60)
+            log(f"scheduled updater self-refresh via helper {helper_name}")
         except Exception as exc:
             log(f"updater self-refresh warning: {exc}")
 

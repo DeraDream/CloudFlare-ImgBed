@@ -3,19 +3,34 @@ import asyncio
 import html
 import io
 import json
+import hashlib
+import re
 import logging
 import mimetypes
 import os
 import sqlite3
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlencode, urlparse
 
 import requests
 from PIL import Image, ImageOps
 from requests_toolbelt.multipart.encoder import MultipartEncoder, MultipartEncoderMonitor
+from history_store import (
+    create_history,
+    decode_settings,
+    decode_tags,
+    find_duplicate,
+    get_history,
+    init_history_db,
+    list_history,
+    update_history,
+    update_tags_note,
+)
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, Update
 from telegram.constants import ChatAction
 from telegram.ext import (
@@ -27,7 +42,7 @@ from telegram.ext import (
     filters,
 )
 
-BOT_VERSION = "v0.3.3"
+BOT_VERSION = "v0.4.0"
 BOT_TOKEN_ENV = os.getenv("BOT_TOKEN", "").strip()
 IMGBED_URL = os.getenv("IMGBED_URL", "http://imgbed:8080").rstrip("/")
 IMGBED_PUBLIC_URL = os.getenv("IMGBED_PUBLIC_URL", "").strip().rstrip("/")
@@ -37,6 +52,11 @@ IMGBED_DB_PATH = os.getenv("IMGBED_DB_PATH", "/imgbed-data/database.sqlite")
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "120"))
 UPDATE_AGENT_URL = os.getenv("UPDATE_AGENT_URL", "http://updater:8081").rstrip("/")
 APP_VERSION = os.getenv("APP_VERSION", "").strip()
+BOT_TIMEZONE = os.getenv("BOT_TIMEZONE", "Asia/Shanghai").strip() or "Asia/Shanghai"
+try:
+    LOCAL_TZ = ZoneInfo(BOT_TIMEZONE)
+except Exception:
+    LOCAL_TZ = ZoneInfo("UTC")
 
 
 def parse_allowed_ids(raw: str) -> set[int]:
@@ -128,8 +148,8 @@ def main_menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         [
             [KeyboardButton("⚙️ 上传设置"), KeyboardButton("📦 存储渠道")],
-            [KeyboardButton("👤 当前配置"), KeyboardButton("🌐 打开图床")],
-            [KeyboardButton("⬆️ 版本升级")],
+            [KeyboardButton("👤 当前配置"), KeyboardButton("🕘 最近上传")],
+            [KeyboardButton("🌐 打开图床"), KeyboardButton("⬆️ 版本升级")],
         ],
         resize_keyboard=True,
         one_time_keyboard=False,
@@ -150,6 +170,7 @@ class UserSettings:
     compress_enabled: bool = True
     compress_threshold: float = 5.0
     compress_target: float = 4.0
+    auto_date_dir: bool = False
 
 
 def db_connect() -> sqlite3.Connection:
@@ -185,6 +206,13 @@ def init_db() -> None:
             )
             """
         )
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(user_settings)").fetchall()}
+        if "auto_date_dir" not in columns:
+            conn.execute(
+                "ALTER TABLE user_settings ADD COLUMN auto_date_dir INTEGER NOT NULL DEFAULT 0"
+            )
+
+    init_history_db(DB_PATH)
 
 
 def get_meta(key: str, default: str = "") -> str:
@@ -226,6 +254,7 @@ def get_settings(user_id: int) -> UserSettings:
         compress_enabled=bool(row["compress_enabled"]),
         compress_threshold=float(row["compress_threshold"]),
         compress_target=float(row["compress_target"]),
+        auto_date_dir=bool(row["auto_date_dir"]),
     )
 
 
@@ -235,6 +264,7 @@ def update_settings(user_id: int, **values) -> UserSettings:
     allowed = {
         "channel_type", "channel_name", "upload_folder", "auto_retry", "name_type",
         "convert_webp", "compress_enabled", "compress_threshold", "compress_target",
+        "auto_date_dir",
     }
     values = {k: v for k, v in values.items() if k in allowed}
     if not values:

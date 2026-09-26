@@ -27,7 +27,7 @@ from telegram.ext import (
     filters,
 )
 
-BOT_VERSION = "v0.3.0"
+BOT_VERSION = "v0.3.1"
 BOT_TOKEN_ENV = os.getenv("BOT_TOKEN", "").strip()
 IMGBED_URL = os.getenv("IMGBED_URL", "http://imgbed:8080").rstrip("/")
 IMGBED_PUBLIC_URL = os.getenv("IMGBED_PUBLIC_URL", "").strip().rstrip("/")
@@ -332,9 +332,9 @@ def update_status_text(data: dict) -> str:
     if data.get("updating"):
         status = "⏳ " + str(data.get("message") or "正在升级")
     elif data.get("updateAvailable"):
-        status = "🆕 发现新版本"
+        status = "🆕 发现新版本，可以点击「立即升级」"
     else:
-        status = "✅ 当前已是最新版本"
+        status = "✅ 当前已经是最新版本，无需升级"
     return (
         "⬆️ <b>版本升级</b>\n\n"
         f"当前版本：<code>{html.escape(str(current))}</code>"
@@ -904,6 +904,7 @@ async def setting_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if not folder.startswith("/"):
                 folder = "/" + folder
             s = update_settings(uid, upload_folder=folder)
+            feedback = f"✅ 上传目录已设置为：<code>{html.escape(folder)}</code>"
         elif awaiting == "threshold":
             number = float(value)
             if not 0.5 <= number <= 100:
@@ -913,17 +914,21 @@ async def setting_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if current.compress_target > number:
                 updates["compress_target"] = number
             s = update_settings(uid, **updates)
+            feedback = f"✅ 压缩阈值已设置为：<code>{number:g} MB</code>"
         elif awaiting == "target":
             number = float(value)
             current = get_settings(uid)
             if not 0.1 <= number <= current.compress_threshold:
                 raise ValueError(f"范围应为 0.1 ~ {current.compress_threshold:g} MB")
             s = update_settings(uid, compress_target=number)
+            feedback = f"✅ 期望大小已设置为：<code>{number:g} MB</code>"
         else:
             return
     except Exception as exc:
         await update.effective_message.reply_text(f"❌ 设置无效：{exc}\n请重新打开 /settings 设置。")
         return
+
+    await update.effective_message.reply_text(feedback, parse_mode="HTML")
     await render_settings(update, s)
 
 
@@ -1179,7 +1184,8 @@ def main() -> None:
         filters.Regex(r"^(⚙️ 上传设置|📦 存储渠道|👤 当前配置|🌐 打开图床|⬆️ 版本升级)$"),
         menu_button_handler,
     ))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, setting_text_input))
+    # 设置输入允许以 / 开头，例如上传目录 /telegram；未知斜杠文本也可作为设置值处理。
+    app.add_handler(MessageHandler(filters.TEXT, setting_text_input))
     logger.info("ImgBed Telegram Bot %s started", BOT_VERSION)
     app.run_polling(drop_pending_updates=True)
 

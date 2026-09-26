@@ -1729,6 +1729,7 @@ async def process_source_upload(
             channel_type=settings.channel_type,
             channel_name=settings.channel_name,
             upload_folder=upload_folder,
+            user_id=user_id,
             exclude_id=history_id,
         )
 

@@ -4,6 +4,8 @@ services:
     image: deradream/cloudflare-imgbed:local
     ports:
       - "127.0.0.1:7658:8080"
+    environment:
+      UPDATE_AGENT_URL: http://updater:8081
     volumes:
       - ./data:/app/data
     restart: unless-stopped
@@ -14,6 +16,7 @@ services:
     container_name: imgbed-telegram-bot
     depends_on:
       - imgbed
+      - updater
     environment:
       # BOT_TOKEN / IMGBED_API_TOKEN / ALLOWED_USER_IDS 可选。
       # 留空时 Bot 会从 ImgBed 后台「Telegram Bot 上传配置」读取。
@@ -25,7 +28,22 @@ services:
       REQUEST_TIMEOUT: ${REQUEST_TIMEOUT:-120}
       BOT_DB_PATH: /data/bot.db
       IMGBED_DB_PATH: /imgbed-data/database.sqlite
+      UPDATE_AGENT_URL: http://updater:8081
     volumes:
       - ./telegram-bot-data:/data
       - ./data:/imgbed-data:ro
+    restart: unless-stopped
+
+  updater:
+    build:
+      context: ./updater
+    container_name: imgbed-updater
+    environment:
+      PROJECT_DIR: ${PROJECT_DIR:-/opt/docker/cloudflare-imgbed}
+      REPO_BRANCH: main
+      EXPECTED_REPO: DeraDream/CloudFlare-ImgBed
+      UPDATE_PORT: 8081
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${PROJECT_DIR:-/opt/docker/cloudflare-imgbed}:${PROJECT_DIR:-/opt/docker/cloudflare-imgbed}
     restart: unless-stopped

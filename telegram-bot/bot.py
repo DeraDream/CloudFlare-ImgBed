@@ -1878,6 +1878,7 @@ async def flush_media_group(
     reporter.set_item(1, len(sources), sources[0]["filename"])
     await reporter.start()
 
+    album_folder = effective_upload_folder(settings)
     results = []
     failures = []
     for index, source in enumerate(sources, start=1):
@@ -1891,6 +1892,7 @@ async def flush_media_group(
                 uid,
                 first.effective_chat.id,
                 reporter,
+                upload_folder_override=album_folder,
             )
             results.append(row)
         except UploadProcessError as exc:
@@ -1924,7 +1926,7 @@ async def flush_media_group(
         if row:
             buttons.append([
                 InlineKeyboardButton(
-                    f"🔄 重试 {row['original_name'] or row['id']}",
+                    f"🔄 重试 {str(row['original_name'] or row['id'])[:28]}",
                     callback_data=f"retry:{row['id']}",
                 )
             ])

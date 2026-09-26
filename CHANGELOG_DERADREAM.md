@@ -1,5 +1,18 @@
 # DeraDream Fork Changelog
 
+## 2.8
+
+- Telegram Bot 新增「🕘 最近上传」历史记录与分页详情。
+- 新增 Telegram 相册 Media Group 批量上传，统一显示整体进度与结果汇总。
+- 新增按日期自动目录，可在基础目录后追加 `YYYY/MM/DD`。
+- 上传进度增强：动态进度条 + 百分比，并在下载/上传阶段显示速度与 ETA。
+- 上传失败新增「🔄 重新上传」，保存 Telegram file_id 与上传设置快照后可一键重试。
+- 新增 SHA-256 查重 / 秒传，同一存储渠道与目录命中历史文件时直接复用 URL。
+- 上传成功新增媒体信息卡片：尺寸、格式、最终/原始大小、存储渠道、目录等。
+- 新增标签 / 备注：Caption 可写 `#标签 备注`，上传后也可编辑。
+- 标签、备注、查重记录和最近上传历史存储在 Bot SQLite，不要求提高 ImgBed API Token 权限。
+- Bot 版本更新为 v0.4.0。
+
 ## 2.7
 
 - Telegram 上传成功结果移除 BBCode，仅保留 URL 与 Markdown。

@@ -26,6 +26,7 @@ services:
       IMGBED_API_TOKEN: ${IMGBED_API_TOKEN:-}
       ALLOWED_USER_IDS: ${ALLOWED_USER_IDS:-}
       REQUEST_TIMEOUT: ${REQUEST_TIMEOUT:-120}
+      BOT_TIMEZONE: ${BOT_TIMEZONE:-Asia/Shanghai}
       BOT_DB_PATH: /data/bot.db
       IMGBED_DB_PATH: /imgbed-data/database.sqlite
       UPDATE_AGENT_URL: http://updater:8081

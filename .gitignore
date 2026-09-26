@@ -11,3 +11,6 @@ node_modules
 .vscode/
 .claude/
 .agents/
+# Local deployment secrets / Telegram bot state
+.env
+telegram-bot-data/

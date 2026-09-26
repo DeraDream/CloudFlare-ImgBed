@@ -27,7 +27,7 @@ from telegram.ext import (
     filters,
 )
 
-BOT_VERSION = "v0.3.2"
+BOT_VERSION = "v0.3.3"
 BOT_TOKEN_ENV = os.getenv("BOT_TOKEN", "").strip()
 IMGBED_URL = os.getenv("IMGBED_URL", "http://imgbed:8080").rstrip("/")
 IMGBED_PUBLIC_URL = os.getenv("IMGBED_PUBLIC_URL", "").strip().rstrip("/")
@@ -1115,8 +1115,7 @@ async def handle_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         text = (
             "✅ <b>上传成功！</b>\n\n"
             f"🔗 URL:\n<code>{html.escape(url)}</code>\n\n"
-            f"📝 Markdown:\n<code>![]({html.escape(url)})</code>\n\n"
-            f"💬 BBCode:\n<code>[img]{html.escape(url)}[/img]</code>"
+            f"📝 Markdown:\n<code>![]({html.escape(url)})</code>"
         )
         await status.edit_text(
             text,

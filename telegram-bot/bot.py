@@ -42,7 +42,7 @@ from telegram.ext import (
     filters,
 )
 
-BOT_VERSION = "v0.4.0"
+BOT_VERSION = "v0.4.1"
 BOT_TOKEN_ENV = os.getenv("BOT_TOKEN", "").strip()
 IMGBED_URL = os.getenv("IMGBED_URL", "http://imgbed:8080").rstrip("/")
 IMGBED_PUBLIC_URL = os.getenv("IMGBED_PUBLIC_URL", "").strip().rstrip("/")
@@ -609,9 +609,17 @@ async def get_channels() -> Dict[str, List[dict]]:
 
 
 def updater_status_sync() -> dict:
-    response = requests.get(f"{UPDATE_AGENT_URL}/status", timeout=150)
-    response.raise_for_status()
-    return response.json()
+    last_error = None
+    for attempt in range(6):
+        try:
+            response = requests.get(f"{UPDATE_AGENT_URL}/status", timeout=30)
+            response.raise_for_status()
+            return response.json()
+        except requests.RequestException as exc:
+            last_error = exc
+            if attempt < 5:
+                time.sleep(2)
+    raise last_error or RuntimeError("updater unavailable")
 
 
 async def updater_status() -> dict:

@@ -15,6 +15,7 @@ from urllib.parse import urlencode, urlparse
 
 import requests
 from PIL import Image, ImageOps
+from requests_toolbelt.multipart.encoder import MultipartEncoder, MultipartEncoderMonitor
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, Update
 from telegram.constants import ChatAction
 from telegram.ext import (
@@ -26,7 +27,7 @@ from telegram.ext import (
     filters,
 )
 
-BOT_VERSION = "v0.2.2"
+BOT_VERSION = "v0.3.0"
 BOT_TOKEN_ENV = os.getenv("BOT_TOKEN", "").strip()
 IMGBED_URL = os.getenv("IMGBED_URL", "http://imgbed:8080").rstrip("/")
 IMGBED_PUBLIC_URL = os.getenv("IMGBED_PUBLIC_URL", "").strip().rstrip("/")
@@ -176,6 +177,36 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS bot_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+            """
+        )
+
+
+def get_meta(key: str, default: str = "") -> str:
+    with db_connect() as conn:
+        row = conn.execute("SELECT value FROM bot_meta WHERE key=?", (key,)).fetchone()
+    return str(row["value"]) if row else default
+
+
+def set_meta(key: str, value) -> None:
+    with db_connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO bot_meta(key, value) VALUES(?, ?)
+            ON CONFLICT(key) DO UPDATE SET value=excluded.value
+            """,
+            (key, str(value)),
+        )
+
+
+def delete_meta(key: str) -> None:
+    with db_connect() as conn:
+        conn.execute("DELETE FROM bot_meta WHERE key=?", (key,))
 
 
 def get_settings(user_id: int) -> UserSettings:
@@ -337,6 +368,120 @@ async def show_update_status(update: Update) -> None:
         await update.effective_message.reply_text(text, parse_mode="HTML", reply_markup=markup)
 
 
+def update_result_text(data: dict) -> str:
+    success = data.get("success")
+    version = data.get("currentVersion") or APP_VERSION or "unknown"
+    commit = data.get("currentShort") or ""
+    if success is True:
+        return (
+            "✅ <b>版本升级成功</b>\n\n"
+            f"当前版本：<code>{html.escape(str(version))}</code>"
+            + (f"\nCommit：<code>{html.escape(str(commit))}</code>" if commit else "")
+            + "\n\n图床与 Telegram Bot 已切换到新版本。"
+        )
+    message = str(data.get("message") or data.get("error") or "未知错误")
+    stage = str(data.get("stage") or "failed")
+    return (
+        "❌ <b>版本升级失败</b>\n\n"
+        f"阶段：<code>{html.escape(stage)}</code>\n"
+        f"原因：<code>{html.escape(message)}</code>\n\n"
+        "可在网页「版本升级」页面查看详细日志。"
+    )
+
+
+async def send_update_result(application: Application, data: dict) -> bool:
+    chat_id = get_meta("update_pending_chat")
+    message_id = get_meta("update_pending_message")
+    if not chat_id:
+        return False
+
+    text = update_result_text(data)
+    try:
+        if message_id:
+            await application.bot.edit_message_text(
+                chat_id=int(chat_id),
+                message_id=int(message_id),
+                text=text,
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 再次检查", callback_data="upd:check")]
+                ]),
+            )
+        else:
+            await application.bot.send_message(
+                chat_id=int(chat_id),
+                text=text,
+                parse_mode="HTML",
+            )
+    except Exception:
+        logger.exception("Failed to send update result")
+        return False
+
+    finished_at = str(data.get("finishedAt") or int(time.time()))
+    set_meta("last_update_notice", finished_at)
+    delete_meta("update_pending_chat")
+    delete_meta("update_pending_message")
+    delete_meta("update_pending_started")
+    return True
+
+
+async def monitor_update(application: Application) -> None:
+    """持续跟踪升级状态；Bot 被更新重启后，post_init 会自动续接。"""
+    chat_id = get_meta("update_pending_chat")
+    if not chat_id:
+        return
+
+    started_at = int(get_meta("update_pending_started", "0") or 0)
+    last_stage = ""
+    deadline = time.monotonic() + 3600
+
+    while time.monotonic() < deadline:
+        try:
+            data = await updater_status()
+        except Exception:
+            # 更新期间 updater 自身也可能短暂重启，继续等待。
+            await asyncio.sleep(4)
+            continue
+
+        if data.get("updating"):
+            stage = str(data.get("stage") or "")
+            message = str(data.get("message") or "正在升级")
+            if stage != last_stage:
+                last_stage = stage
+                message_id = get_meta("update_pending_message")
+                if message_id:
+                    try:
+                        await application.bot.edit_message_text(
+                            chat_id=int(chat_id),
+                            message_id=int(message_id),
+                            text=(
+                                "⬆️ <b>正在升级</b>\n\n"
+                                f"{html.escape(message)}\n"
+                                f"阶段：<code>{html.escape(stage or 'working')}</code>"
+                            ),
+                            parse_mode="HTML",
+                        )
+                    except Exception:
+                        pass
+            await asyncio.sleep(4)
+            continue
+
+        finished_at = int(data.get("finishedAt") or 0)
+        if data.get("success") is not None and (not started_at or finished_at >= started_at):
+            await send_update_result(application, data)
+            return
+
+        await asyncio.sleep(4)
+
+    # 超时也必须给反馈
+    await send_update_result(application, {
+        "success": False,
+        "stage": "timeout",
+        "message": "等待升级结果超过 60 分钟",
+        "finishedAt": int(time.time()),
+    })
+
+
 def flatten_channels(channels: Dict[str, List[dict]]) -> List[Tuple[str, str]]:
     result: List[Tuple[str, str]] = []
     for channel_type in ("cfr2", "s3", "webdav", "huggingface", "discord"):
@@ -438,7 +583,13 @@ def preprocess_file(data: bytes, filename: str, mime_type: str, settings: UserSe
     return data, filename, mime_type
 
 
-def upload_file_sync(data: bytes, filename: str, mime_type: str, settings: UserSettings) -> str:
+def upload_file_sync(
+    data: bytes,
+    filename: str,
+    mime_type: str,
+    settings: UserSettings,
+    progress_callback=None,
+) -> str:
     params = {
         "uploadChannel": settings.channel_type,
         "channelName": settings.channel_name,
@@ -448,10 +599,23 @@ def upload_file_sync(data: bytes, filename: str, mime_type: str, settings: UserS
         "returnFormat": "full",
         "serverCompress": "false",
     }
+
+    encoder = MultipartEncoder(
+        fields={"file": (filename, data, mime_type or "application/octet-stream")}
+    )
+
+    def on_upload(monitor):
+        if progress_callback and monitor.len:
+            progress_callback(min(1.0, monitor.bytes_read / monitor.len))
+
+    monitor = MultipartEncoderMonitor(encoder, on_upload)
+    headers = api_headers()
+    headers["Content-Type"] = monitor.content_type
+
     response = requests.post(
         f"{IMGBED_URL}/upload?{urlencode(params)}",
-        headers=api_headers(),
-        files={"file": (filename, data, mime_type or "application/octet-stream")},
+        headers=headers,
+        data=monitor,
         timeout=REQUEST_TIMEOUT,
     )
     if response.status_code >= 400:
@@ -465,8 +629,27 @@ def upload_file_sync(data: bytes, filename: str, mime_type: str, settings: UserS
     return normalize_public_url(str(url))
 
 
-async def upload_file(data: bytes, filename: str, mime_type: str, settings: UserSettings) -> str:
-    return await asyncio.to_thread(upload_file_sync, data, filename, mime_type, settings)
+async def upload_file(
+    data: bytes,
+    filename: str,
+    mime_type: str,
+    settings: UserSettings,
+    reporter=None,
+) -> str:
+    loop = asyncio.get_running_loop()
+
+    def progress(fraction: float):
+        if reporter:
+            reporter.emit_from_thread(loop, 45 + fraction * 53, "正在上传到图床")
+
+    return await asyncio.to_thread(
+        upload_file_sync,
+        data,
+        filename,
+        mime_type,
+        settings,
+        progress,
+    )
 
 
 def settings_text(s: UserSettings) -> str:
@@ -687,12 +870,16 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         try:
             result = await updater_start()
             if result.get("accepted") or result.get("ok"):
+                set_meta("update_pending_chat", query.message.chat_id)
+                set_meta("update_pending_message", query.message.message_id)
+                set_meta("update_pending_started", int(time.time()))
                 await query.edit_message_text(
                     "⬆️ <b>升级任务已开始</b>\n\n"
                     "正在从 GitHub 拉取最新代码并重新构建容器。\n"
-                    "图床和 Bot 可能短暂重启，约几十秒到几分钟后恢复。",
+                    "升级成功或失败后，我会自动在这里反馈结果。",
                     parse_mode="HTML",
                 )
+                context.application.create_task(monitor_update(context.application))
             else:
                 raise RuntimeError(result.get("error") or "升级请求失败")
         except Exception as exc:
@@ -740,21 +927,156 @@ async def setting_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await render_settings(update, s)
 
 
-async def download_telegram_file(update: Update) -> Tuple[bytes, str, str]:
+def progress_bar(percent: float, width: int = 12) -> str:
+    percent = max(0.0, min(100.0, float(percent)))
+    filled = int(round(width * percent / 100))
+    return "█" * filled + "░" * (width - filled)
+
+
+class UploadProgressReporter:
+    def __init__(self, message, filename: str):
+        self.message = message
+        self.filename = filename
+        self.queue = asyncio.Queue(maxsize=1)
+        self.task = None
+        self.last_percent = -1
+        self.last_phase = ""
+        self.last_edit_at = 0.0
+
+    async def start(self):
+        self.task = asyncio.create_task(self._worker())
+        await self.report(1, "准备处理")
+
+    def _enqueue(self, percent: float, phase: str):
+        item = (max(0.0, min(100.0, percent)), phase)
+        if self.queue.full():
+            try:
+                self.queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+        try:
+            self.queue.put_nowait(item)
+        except asyncio.QueueFull:
+            pass
+
+    def emit_from_thread(self, loop, percent: float, phase: str):
+        loop.call_soon_threadsafe(self._enqueue, percent, phase)
+
+    async def report(self, percent: float, phase: str):
+        self._enqueue(percent, phase)
+        await asyncio.sleep(0)
+
+    async def _worker(self):
+        while True:
+            item = await self.queue.get()
+            if item is None:
+                return
+            percent, phase = item
+            now = time.monotonic()
+            should_edit = (
+                percent >= 99
+                or phase != self.last_phase
+                or percent - self.last_percent >= 3
+                or now - self.last_edit_at >= 1.0
+            )
+            if not should_edit:
+                continue
+            self.last_percent = percent
+            self.last_phase = phase
+            self.last_edit_at = now
+            try:
+                await self.message.edit_text(
+                    "📤 <b>上传进度</b>\n\n"
+                    f"<code>{progress_bar(percent)}</code> {percent:.0f}%\n"
+                    f"阶段：{html.escape(phase)}\n"
+                    f"文件：<code>{html.escape(self.filename)}</code>",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+
+    async def stop(self):
+        if not self.task:
+            return
+        if self.queue.full():
+            try:
+                self.queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+        self.queue.put_nowait(None)
+        try:
+            await self.task
+        except Exception:
+            pass
+
+
+def download_stream_sync(url: str, expected_size: int, progress_callback=None) -> bytes:
+    chunks = []
+    downloaded = 0
+    with requests.get(url, stream=True, timeout=REQUEST_TIMEOUT) as response:
+        response.raise_for_status()
+        total = expected_size or int(response.headers.get("Content-Length") or 0)
+        for chunk in response.iter_content(chunk_size=256 * 1024):
+            if not chunk:
+                continue
+            chunks.append(chunk)
+            downloaded += len(chunk)
+            if progress_callback and total > 0:
+                progress_callback(min(1.0, downloaded / total))
+    if progress_callback:
+        progress_callback(1.0)
+    return b"".join(chunks)
+
+
+async def download_telegram_file(update: Update, reporter=None) -> Tuple[bytes, str, str]:
     message = update.effective_message
+    media = None
+    filename = ""
+    mime = "application/octet-stream"
+    expected_size = 0
+
     if message.photo:
-        photo = message.photo[-1]
-        tg_file = await photo.get_file()
-        data = bytes(await tg_file.download_as_bytearray())
-        return data, f"{photo.file_unique_id}.jpg", "image/jpeg"
-    if message.document:
-        doc = message.document
-        tg_file = await doc.get_file()
-        data = bytes(await tg_file.download_as_bytearray())
-        filename = doc.file_name or f"{doc.file_unique_id}"
-        mime = doc.mime_type or mimetypes.guess_type(filename)[0] or "application/octet-stream"
-        return data, filename, mime
-    raise ValueError("不支持的消息类型")
+        media = message.photo[-1]
+        filename = f"{media.file_unique_id}.jpg"
+        mime = "image/jpeg"
+        expected_size = int(media.file_size or 0)
+    elif message.video:
+        media = message.video
+        filename = media.file_name or f"{media.file_unique_id}.mp4"
+        mime = media.mime_type or "video/mp4"
+        expected_size = int(media.file_size or 0)
+    elif message.document:
+        media = message.document
+        filename = media.file_name or f"{media.file_unique_id}"
+        mime = media.mime_type or mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        expected_size = int(media.file_size or 0)
+    else:
+        raise ValueError("不支持的消息类型")
+
+    if reporter:
+        reporter.filename = filename
+        await reporter.report(3, "正在获取 Telegram 文件")
+
+    tg_file = await media.get_file()
+    file_url = str(tg_file.file_path or "")
+    if not file_url:
+        raise RuntimeError("Telegram 未返回文件下载地址")
+    if not file_url.startswith(("http://", "https://")):
+        file_url = f"https://api.telegram.org/file/bot{current_bot_token()}/{file_url.lstrip('/')}"
+
+    loop = asyncio.get_running_loop()
+
+    def progress(fraction: float):
+        if reporter:
+            reporter.emit_from_thread(loop, 5 + fraction * 30, "正在从 Telegram 下载")
+
+    data = await asyncio.to_thread(
+        download_stream_sync,
+        file_url,
+        expected_size,
+        progress,
+    )
+    return data, filename, mime
 
 
 async def handle_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -768,12 +1090,31 @@ async def handle_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📦 选择存储渠道", callback_data="cfg:channel")]]),
         )
         return
+
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.UPLOAD_DOCUMENT)
-    status = await update.effective_message.reply_text("📤 正在上传…")
+    status = await update.effective_message.reply_text("📤 正在准备上传…")
+    reporter = UploadProgressReporter(status, "Telegram 文件")
+    await reporter.start()
+
     try:
-        data, filename, mime = await download_telegram_file(update)
-        processed, filename, mime = await asyncio.to_thread(preprocess_file, data, filename, mime, settings)
-        url = await upload_file(processed, filename, mime, settings)
+        data, filename, mime = await download_telegram_file(update, reporter)
+
+        if mime.startswith("image/"):
+            await reporter.report(38, "正在处理图片")
+            processed, filename, mime = await asyncio.to_thread(
+                preprocess_file, data, filename, mime, settings
+            )
+        else:
+            processed = data
+            await reporter.report(42, "正在准备视频/文件上传")
+
+        reporter.filename = filename
+        await reporter.report(45, "正在上传到图床")
+        url = await upload_file(processed, filename, mime, settings, reporter)
+        await reporter.report(99, "正在生成访问链接")
+        await asyncio.sleep(0.2)
+        await reporter.stop()
+
         text = (
             "✅ <b>上传成功！</b>\n\n"
             f"🔗 URL:\n<code>{html.escape(url)}</code>\n\n"
@@ -791,12 +1132,21 @@ async def handle_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
     except Exception as exc:
         logger.exception("Upload failed")
-        await status.edit_text(f"❌ 上传失败：\n<code>{html.escape(str(exc))}</code>", parse_mode="HTML")
+        await reporter.stop()
+        await status.edit_text(
+            "❌ <b>上传失败</b>\n\n"
+            f"<code>{html.escape(str(exc))}</code>",
+            parse_mode="HTML",
+        )
 
 
 async def post_init(application: Application) -> None:
     # 删除 Telegram 左侧“菜单/命令”入口。Reply Keyboard 的展开/收起由客户端输入框旁按钮控制。
     await application.bot.delete_my_commands()
+
+    # 如果升级过程中 Bot 被重启，继续追踪上一次升级并自动反馈最终结果。
+    if get_meta("update_pending_chat"):
+        application.create_task(monitor_update(application))
 
 
 def wait_for_runtime_config() -> str:
@@ -824,7 +1174,7 @@ def main() -> None:
     app.add_handler(CommandHandler("set_storage", storage_cmd))
     app.add_handler(CommandHandler("me", me))
     app.add_handler(CallbackQueryHandler(callbacks))
-    app.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, handle_upload))
+    app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.Document.ALL, handle_upload))
     app.add_handler(MessageHandler(
         filters.Regex(r"^(⚙️ 上传设置|📦 存储渠道|👤 当前配置|🌐 打开图床|⬆️ 版本升级)$"),
         menu_button_handler,

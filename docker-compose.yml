@@ -1,8 +1,27 @@
 services:
   imgbed:
-    image: marseventh/cloudflare-imgbed:latest
+    build: .
+    image: deradream/cloudflare-imgbed:local
     ports:
-      - "7658:8080"
+      - "127.0.0.1:7658:8080"
     volumes:
       - ./data:/app/data
+    restart: unless-stopped
+
+  telegram-bot:
+    build:
+      context: ./telegram-bot
+    container_name: imgbed-telegram-bot
+    depends_on:
+      - imgbed
+    environment:
+      BOT_TOKEN: ${BOT_TOKEN}
+      IMGBED_URL: http://imgbed:8080
+      IMGBED_PUBLIC_URL: ${IMGBED_PUBLIC_URL}
+      IMGBED_API_TOKEN: ${IMGBED_API_TOKEN}
+      ALLOWED_USER_IDS: ${ALLOWED_USER_IDS}
+      REQUEST_TIMEOUT: ${REQUEST_TIMEOUT:-120}
+      BOT_DB_PATH: /data/bot.db
+    volumes:
+      - ./telegram-bot-data:/data
     restart: unless-stopped

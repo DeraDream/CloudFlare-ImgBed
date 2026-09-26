@@ -248,8 +248,11 @@ def compress_to_target(image: Image.Image, fmt: str, target_bytes: int) -> bytes
     if fmt not in ("JPEG", "WEBP"):
         return image_to_bytes(image, fmt)
     low, high = 35, 95
-    best = image_to_bytes(image, fmt, high)
-    if len(best) <= target_bytes:
+    best = image_to_bytes(image, fmt, low)
+    high_quality = image_to_bytes(image, fmt, high)
+    if len(high_quality) <= target_bytes:
+        return high_quality
+    if len(best) > target_bytes:
         return best
     for _ in range(7):
         quality = (low + high) // 2
@@ -532,7 +535,11 @@ async def setting_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
             number = float(value)
             if not 0.5 <= number <= 100:
                 raise ValueError("范围应为 0.5 ~ 100 MB")
-            s = update_settings(uid, compress_threshold=number)
+            current = get_settings(uid)
+            updates = {"compress_threshold": number}
+            if current.compress_target > number:
+                updates["compress_target"] = number
+            s = update_settings(uid, **updates)
         elif awaiting == "target":
             number = float(value)
             current = get_settings(uid)

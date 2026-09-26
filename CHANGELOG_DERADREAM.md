@@ -1,5 +1,13 @@
 # DeraDream Fork Changelog
 
+## 2.9
+
+- 修复在线升级在 deploy 阶段后 updater 服务永久消失的问题。
+- updater 不再在自身容器内直接执行 Compose 重建自己，避免进程被自己杀死后留下半重建容器和名称冲突。
+- updater 自更新改为独立临时 helper 容器完成，当前 updater 被替换后 helper 仍可继续把新 updater 拉起。
+- Telegram Bot 查询 updater 时增加短暂重启容错，最多重试约 10 秒，避免正常自更新窗口被误报为“更新服务不可用”。
+- Bot 版本更新为 v0.4.1。
+
 ## 2.8
 
 - Telegram Bot 新增「🕘 最近上传」历史记录与分页详情。

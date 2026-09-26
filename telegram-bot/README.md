@@ -18,7 +18,7 @@
   - 压缩阈值
   - 期望大小
 - 支持 Telegram Photo 和 Document。
-- 上传成功返回 URL / Markdown / BBCode。
+- 上传成功返回 URL / Markdown。
 - 用户设置保存到 SQLite。
 
 ## 环境变量

@@ -207,7 +207,7 @@ def reset_settings(user_id: int) -> UserSettings:
 
 
 def is_allowed(user_id: Optional[int]) -> bool:
-    if user_id is None:
+    if user_id is None or not current_bot_enabled():
         return False
     allowed = current_allowed_ids()
     # 安全优先：未配置白名单时不允许上传，只回显用户 ID 方便管理员配置。

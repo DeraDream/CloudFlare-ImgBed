@@ -1,5 +1,12 @@
 # DeraDream Fork Changelog
 
+## 2.7.6-dd.3
+
+- 移除 Bot 自定义「⌨️ 收起菜单」按钮。
+- Reply Keyboard 仅保留功能按钮。
+- 展开/收起完全交给 Telegram 客户端原生键盘按钮控制。
+- Telegram Bot 版本更新为 v0.2.2。
+
 ## 2.7.6-dd.1
 
 基于上游 CloudFlare-ImgBed 2.7.6 的定制版本。

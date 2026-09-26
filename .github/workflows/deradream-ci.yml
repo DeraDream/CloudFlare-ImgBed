@@ -45,7 +45,7 @@ jobs:
           })
           row = find_duplicate(
               bot.DB_PATH, sha256='abc', channel_type='s3',
-              channel_name='cloudflare', upload_folder=folder
+              channel_name='cloudflare', upload_folder=folder, user_id=10001
           )
           assert row and row['id'] == hid
           update_history(bot.DB_PATH, hid, tags=['x'], note='n')

@@ -28,6 +28,16 @@ state = {
     "success": None,
 }
 
+# updater 自身会在成功升级后被重建，因此把最后结果恢复到内存，
+# 让重启后的 Bot 仍能获得“升级成功/失败”状态并主动反馈。
+if STATE_FILE.exists():
+    try:
+        saved_state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        if isinstance(saved_state, dict):
+            state.update(saved_state)
+    except Exception:
+        pass
+
 
 def now():
     return int(time.time())

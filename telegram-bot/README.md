@@ -29,9 +29,9 @@
 | `BOT_TOKEN` | 是 | BotFather 创建的 Telegram Bot Token |
 | `IMGBED_API_TOKEN` | 是 | CloudFlare-ImgBed API Token，至少有 `upload` 权限 |
 | `ALLOWED_USER_IDS` | 是 | 允许使用 Bot 的 Telegram User ID，多个用逗号分隔 |
-| `IMGBED_URL` | 否 | Bot 调用的内部地址，Compose 默认 `http://imgbed:8080` |
+| `IMGBED_URL` | 否 | Bot 调用的内部地址，单容器部署默认 `http://127.0.0.1:8080` |
 | `IMGBED_PUBLIC_URL` | 建议 | 返回给用户的公网图床地址，例如 `https://img.example.com` |
-| `BOT_DB_PATH` | 否 | SQLite 路径，默认 `/data/bot.db` |
+| `BOT_DB_PATH` | 否 | SQLite 路径，单容器部署默认 `/app/telegram-bot-data/bot.db` |
 | `REQUEST_TIMEOUT` | 否 | 上传请求超时，默认 120 秒 |
 | `BOT_TIMEZONE` | 否 | 日期目录和历史时间所用时区，默认 `Asia/Shanghai` |
 
@@ -80,21 +80,39 @@ WebP 和压缩在 Bot 侧完成，然后再调用 ImgBed `/upload`：
 Telegram 交互设计参考了 lhl77/ImgTGBot 的使用体验，但本实现为 CloudFlare-ImgBed API 独立编写。
 
 
-## 在线升级
+## 单容器部署与在线升级
 
-Docker 部署新增内部 `updater` 服务。Web 后台的「系统版本」卡片会打开 `/update.html`，Telegram Bot 的「⬆️ 版本升级」也会访问同一个内部更新服务。
+从 Fork 3.1 开始，Docker Compose 只有一个长期运行服务：`imgbed`。
+
+同一个容器内由 Supervisor 同时运行：
+
+- ImgBed Node 主服务（8080）
+- Telegram Bot
+- 内置 updater（仅监听 127.0.0.1:8081）
+
+因此不再需要单独的 `telegram-bot` 和 `updater` 容器，也不会再依赖 Docker 服务名 DNS 在三个容器之间通信。
+
+Web 后台的「系统版本」和 Telegram Bot 的「⬆️ 版本升级」都调用同容器内 updater。
 
 更新流程：
 
 1. 检查 `DeraDream/CloudFlare-ImgBed` 的 `main`。
 2. 拉取最新代码。
-3. 本地重新构建 ImgBed 与 Telegram Bot。
-4. 成功构建后才替换正在运行的容器。
-5. 最后刷新 updater 自身。
+3. 构建一个新的 ImgBed 一体化镜像（已包含 Bot 和 updater）。
+4. 启动临时 helper 容器接管重建动作。
+5. 原子重建唯一的 `imgbed` 容器。
+6. 新容器启动后，Bot 和 updater 自动恢复待通知状态并反馈升级结果。
 
-`data/`、SQLite、Telegram Bot 设置和 `.env` 不会被删除。
+`data/`、`telegram-bot-data/`、SQLite、Bot 设置、上传历史、认证 Session 和 `.env` 都不会被删除。
 
-> 第一次启用在线升级功能仍需在服务器上更新到包含 `updater` 服务的版本一次；之后可以直接通过 Web 或 Telegram 升级。
+从旧三容器版本迁移到 3.1 需要手动执行一次：
+
+```bash
+git pull --ff-only
+docker compose up -d --build --force-recreate --remove-orphans
+```
+
+完成这次迁移后，后续可直接通过 Web 或 Telegram 在线升级。
 
 
 ## 上传进度与升级反馈

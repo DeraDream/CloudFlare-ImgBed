@@ -1367,6 +1367,54 @@ async def setting_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
     uid = update.effective_user.id
     value = (update.effective_message.text or "").strip()
 
+    # 上传密码认证优先级最高。明文密码不落盘；成功后只保存 user_session。
+    pending_auth = get_pending_auth_history(uid)
+    if pending_auth:
+        if not value:
+            await update.effective_message.reply_text("🔐 请输入上传密码。")
+            return
+
+        # 尽量立即删除用户发送的明文密码，减少聊天记录暴露。
+        try:
+            await update.effective_message.delete()
+        except Exception:
+            pass
+
+        try:
+            session_token = await authenticate_upload_password(value)
+        except ValueError:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=(
+                    "❌ 上传密码错误，请重新输入。\n\n"
+                    "Bot 不会保存你输入的明文密码。"
+                ),
+            )
+            return
+        except Exception as exc:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=(
+                    "❌ 上传密码认证失败："
+                    f"<code>{html.escape(str(exc))}</code>\n"
+                    "请稍后重新输入。"
+                ),
+                parse_mode="HTML",
+            )
+            return
+
+        set_upload_session(uid, session_token)
+        clear_pending_auth_history(uid)
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=(
+                "✅ 上传密码认证成功。\n"
+                "未保存明文密码，仅缓存登录会话；现在自动继续刚才的上传。"
+            ),
+        )
+        await retry_pending_auth_uploads(update, context, pending_auth)
+        return
+
     history_id = context.user_data.pop("awaiting_history_meta", None)
     if history_id is not None:
         if value == "-":

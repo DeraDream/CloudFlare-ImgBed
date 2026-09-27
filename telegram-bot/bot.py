@@ -42,7 +42,7 @@ from telegram.ext import (
     filters,
 )
 
-BOT_VERSION = "v0.4.3"
+BOT_VERSION = "v0.5.0"
 BOT_TOKEN_ENV = os.getenv("BOT_TOKEN", "").strip()
 IMGBED_URL = os.getenv("IMGBED_URL", "http://imgbed:8080").rstrip("/")
 IMGBED_PUBLIC_URL = os.getenv("IMGBED_PUBLIC_URL", "").strip().rstrip("/")
@@ -600,7 +600,9 @@ async def show_history_detail(update: Update, history_id: int, page: int = 0) ->
         return
     text = history_info_text(row)
     if row["status"] == "success" and row["url"]:
-        text += f"\n\n🔗 URL:\n<code>{html.escape(row['url'])}</code>"
+        text += f"\n\n🔗 原图链接：\n<code>{html.escape(row['url'])}</code>"
+        if row["preview_url"]:
+            text += f"\n\n👁 预览链接：\n<code>{html.escape(row['preview_url'])}</code>"
     if update.callback_query:
         await update.callback_query.edit_message_text(
             text,
@@ -898,7 +900,7 @@ def normalize_public_url(url: str) -> str:
         return f"{IMGBED_PUBLIC_URL}{url}"
     try:
         parsed = urlparse(url)
-        if parsed.path.startswith("/file/"):
+        if parsed.path.startswith(("/file/", "/view/")):
             suffix = parsed.path
             if parsed.query:
                 suffix += f"?{parsed.query}"
@@ -988,7 +990,7 @@ def upload_file_sync(
     upload_folder: str,
     user_id: int,
     progress_callback=None,
-) -> str:
+) -> Tuple[str, str]:
     params = {
         "uploadChannel": settings.channel_type,
         "channelName": settings.channel_name,
@@ -1025,10 +1027,20 @@ def upload_file_sync(
     result = response.json()
     if not isinstance(result, list) or not result or not isinstance(result[0], dict):
         raise RuntimeError(f"Unexpected response: {result!r}")
-    url = result[0].get("publicUrl") or result[0].get("src")
+    item = result[0]
+    url = item.get("publicUrl") or item.get("src")
     if not url:
         raise RuntimeError(f"Upload response has no URL: {result!r}")
-    return normalize_public_url(str(url))
+
+    preview_url = item.get("previewUrl")
+    if not preview_url:
+        src = str(item.get("src") or "")
+        preview_url = src.replace("/file/", "/view/") if "/file/" in src else ""
+
+    return (
+        normalize_public_url(str(url)),
+        normalize_public_url(str(preview_url)) if preview_url else "",
+    )
 
 
 async def upload_file(
@@ -1039,7 +1051,7 @@ async def upload_file(
     upload_folder: str,
     user_id: int,
     reporter=None,
-) -> str:
+) -> Tuple[str, str]:
     loop = asyncio.get_running_loop()
 
     def progress(transferred: int, total: int):
@@ -1771,7 +1783,9 @@ def upload_result_text(row) -> str:
     title = "⚡ <b>秒传成功！</b>" if duplicate else "✅ <b>上传成功！</b>"
     text = title + "\n\n" + history_info_text(row, compact=True)
     if row["url"]:
-        text += f"\n\n🔗 URL:\n<code>{html.escape(row['url'])}</code>"
+        text += f"\n\n🔗 原图链接：\n<code>{html.escape(row['url'])}</code>"
+        if row["preview_url"]:
+            text += f"\n\n👁 预览链接：\n<code>{html.escape(row['preview_url'])}</code>"
         filename = row["final_name"] or row["original_name"] or "file"
         if (row["mime_type"] or "").startswith("image/"):
             markdown = f"![]({row['url']})"
@@ -1784,7 +1798,10 @@ def upload_result_text(row) -> str:
 def upload_result_keyboard(row) -> InlineKeyboardMarkup:
     rows = []
     if row["url"]:
-        rows.append([InlineKeyboardButton("🔗 打开链接", url=row["url"])])
+        link_row = [InlineKeyboardButton("🔗 打开原图", url=row["url"])]
+        if row["preview_url"]:
+            link_row.append(InlineKeyboardButton("👁 打开预览", url=row["preview_url"]))
+        rows.append(link_row)
     rows.append([
         InlineKeyboardButton("🏷 标签/备注", callback_data=f"meta:{row['id']}"),
         InlineKeyboardButton("🕘 最近上传", callback_data="recent:0"),
@@ -1926,11 +1943,14 @@ async def process_source_upload(
 
         if duplicate:
             url = str(duplicate["url"])
+            preview_url = str(duplicate["preview_url"] or "")
+            if not preview_url and "/file/" in url:
+                preview_url = url.replace("/file/", "/view/", 1)
             await reporter.report(98, "查重命中，秒传完成")
             is_duplicate = 1
         else:
             await reporter.report(45, "正在上传到图床")
-            url = await upload_file(
+            url, preview_url = await upload_file(
                 processed,
                 filename,
                 mime,
@@ -1947,6 +1967,7 @@ async def process_source_upload(
             status="success",
             error="",
             url=url,
+            preview_url=preview_url,
             is_duplicate=is_duplicate,
             final_size=final_size,
             final_name=filename,

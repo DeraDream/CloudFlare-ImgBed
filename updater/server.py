@@ -290,10 +290,17 @@ def do_update():
             "build", "--pull", "imgbed"
         ], timeout=3600)
 
-        target_image = run([
+        image_names = run([
             "docker", "compose", "-f", str(COMPOSE_FILE),
-            "images", "-q", "imgbed"
-        ], timeout=30).splitlines()[0].strip()
+            "config", "--images"
+        ], timeout=30).splitlines()
+        image_name = image_names[0].strip() if image_names else ""
+        if not image_name:
+            raise RuntimeError("cannot resolve configured imgbed image name")
+
+        target_image = run([
+            "docker", "image", "inspect", "-f", "{{.Id}}", image_name
+        ], timeout=30).strip()
         if not target_image:
             raise RuntimeError("cannot resolve newly built imgbed image")
 

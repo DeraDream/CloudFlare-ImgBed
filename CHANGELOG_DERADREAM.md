@@ -1,5 +1,12 @@
 # DeraDream Fork Changelog
 
+## 3.2
+
+- 修复单容器镜像升级到 Alpine / Python 3.14 后 Telegram Bot 启动即崩溃的问题。
+- Python 3.14 不再为主线程隐式创建 asyncio event loop，Bot 现在会在启动 polling 前显式创建并绑定事件循环。
+- 修复症状：`RuntimeError: There is no current event loop in thread 'MainThread'`。
+- Bot 版本更新为 v0.4.3。
+
 ## 3.1
 
 - Docker 部署改为单容器：ImgBed、Telegram Bot、在线更新器全部运行在同一个 `imgbed` 容器中。

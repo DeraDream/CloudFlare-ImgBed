@@ -266,7 +266,8 @@ async function processFileUpload(context, formdata = null) {
 
 // 构建上传成功响应，自动附带 publicUrl（如果已配置）
 function buildUploadResponse(context, returnLink) {
-    const result = { src: returnLink };
+    const previewUrl = String(returnLink).replace('/file/', '/view/');
+    const result = { src: returnLink, previewUrl };
     if (context.publicUrl) {
         result.publicUrl = context.publicUrl;
     }

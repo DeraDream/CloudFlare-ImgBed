@@ -388,6 +388,16 @@ app.use('/index.html', async (c, next) => {
     c.header('Cache-Control', 'no-cache, no-store, must-revalidate');
 });
 
+// 图片预览页：保留 /file/* 作为原始文件直链，/view/* 提供移动端分享/保存 UI。
+app.get('/view/*', async (c) => {
+    const viewPath = join(ROOT_DIR, 'frontend-dist', 'view.html');
+    if (!existsSync(viewPath)) {
+        return c.text('Preview page not found', 404);
+    }
+    c.header('Cache-Control', 'no-cache');
+    return c.html(readFileSync(viewPath, 'utf8'));
+});
+
 // 静态文件服务
 app.use('/*', serveStatic({
     root: './frontend-dist',

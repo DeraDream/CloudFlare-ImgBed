@@ -2,50 +2,42 @@ services:
   imgbed:
     build: .
     image: deradream/cloudflare-imgbed:local
+    container_name: imgbed
     ports:
       - "127.0.0.1:7658:8080"
     environment:
-      UPDATE_AGENT_URL: http://updater:8081
-    volumes:
-      - ./data:/app/data
-    restart: unless-stopped
+      # ImgBed
+      PORT: 8080
 
-  telegram-bot:
-    build:
-      context: ./telegram-bot
-    container_name: imgbed-telegram-bot
-    depends_on:
-      - imgbed
-      - updater
-    environment:
-      # BOT_TOKEN / IMGBED_API_TOKEN / ALLOWED_USER_IDS 可选。
-      # 留空时 Bot 会从 ImgBed 后台「Telegram Bot 上传配置」读取。
+      # Telegram Bot（留空时从 ImgBed 后台「Telegram Bot 上传配置」读取）
       BOT_TOKEN: ${BOT_TOKEN:-}
-      IMGBED_URL: http://imgbed:8080
+      IMGBED_URL: http://127.0.0.1:8080
       IMGBED_PUBLIC_URL: ${IMGBED_PUBLIC_URL}
       IMGBED_API_TOKEN: ${IMGBED_API_TOKEN:-}
       ALLOWED_USER_IDS: ${ALLOWED_USER_IDS:-}
       REQUEST_TIMEOUT: ${REQUEST_TIMEOUT:-120}
       BOT_TIMEZONE: ${BOT_TIMEZONE:-Asia/Shanghai}
-      BOT_DB_PATH: /data/bot.db
-      IMGBED_DB_PATH: /imgbed-data/database.sqlite
-      UPDATE_AGENT_URL: http://updater:8081
-    volumes:
-      - ./telegram-bot-data:/data
-      - ./data:/imgbed-data:ro
-    restart: unless-stopped
+      BOT_DB_PATH: /app/telegram-bot-data/bot.db
+      IMGBED_DB_PATH: /app/data/database.sqlite
 
-  updater:
-    build:
-      context: ./updater
-    container_name: imgbed-updater
-    environment:
+      # 内置在线更新器
+      UPDATE_AGENT_URL: http://127.0.0.1:8081
+      UPDATE_HOST: 127.0.0.1
+      UPDATE_PORT: 8081
       PROJECT_DIR: ${PROJECT_DIR:-/opt/docker/cloudflare-imgbed}
       REPO_BRANCH: main
       EXPECTED_REPO: DeraDream/CloudFlare-ImgBed
       REPO_URL: https://github.com/DeraDream/CloudFlare-ImgBed.git
-      UPDATE_PORT: 8081
+
     volumes:
+      # ImgBed 数据
+      - ./data:/app/data
+
+      # 保留原 Telegram Bot SQLite，不迁移/不丢历史
+      - ./telegram-bot-data:/app/telegram-bot-data
+
+      # 在线升级需要控制本机 Docker，并读取当前 Git 工作目录
       - /var/run/docker.sock:/var/run/docker.sock
       - ${PROJECT_DIR:-/opt/docker/cloudflare-imgbed}:${PROJECT_DIR:-/opt/docker/cloudflare-imgbed}
+
     restart: unless-stopped

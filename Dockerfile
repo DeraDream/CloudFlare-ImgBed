@@ -1,24 +1,36 @@
-FROM node:22-slim AS dependencies
+FROM node:22-alpine AS dependencies
 
 WORKDIR /app
 
 COPY package.json package-lock.json ./
 COPY deploy/profiles ./deploy/profiles
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends python3 make g++ && \
+RUN apk add --no-cache python3 make g++ && \
     npm ci --workspace=@cloudflare-imgbed/common --workspace=@cloudflare-imgbed/server --omit=dev && \
-    rm -rf /root/.npm /var/lib/apt/lists/* /tmp/*
+    rm -rf /root/.npm /tmp/*
 
-FROM node:22-slim AS runtime
+FROM node:22-alpine AS runtime
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates curl && \
-    update-ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
+RUN apk add --no-cache \
+        ca-certificates curl git \
+        python3 py3-pip \
+        supervisor \
+        docker-cli docker-cli-compose \
+        libjpeg-turbo libwebp zlib && \
+    python3 -m venv /opt/venv
 
 WORKDIR /app
-ENV NODE_ENV=production
+
+ENV NODE_ENV=production \
+    PYTHONUNBUFFERED=1 \
+    PATH="/opt/venv/bin:$PATH" \
+    PORT=8080 \
+    UPDATE_HOST=127.0.0.1 \
+    UPDATE_PORT=8081 \
+    IMGBED_URL=http://127.0.0.1:8080 \
+    UPDATE_AGENT_URL=http://127.0.0.1:8081 \
+    BOT_DB_PATH=/app/telegram-bot-data/bot.db \
+    IMGBED_DB_PATH=/app/data/database.sqlite
 
 COPY --from=dependencies /app/node_modules ./node_modules
 COPY package.json ./
@@ -29,5 +41,14 @@ COPY functions ./functions
 COPY database ./database
 COPY deploy/server ./deploy/server
 
+COPY telegram-bot/requirements.txt /tmp/telegram-bot-requirements.txt
+RUN /opt/venv/bin/pip install --no-cache-dir -r /tmp/telegram-bot-requirements.txt && \
+    rm -f /tmp/telegram-bot-requirements.txt
+
+COPY telegram-bot ./telegram-bot
+COPY updater ./updater
+COPY deploy/supervisord.conf /etc/supervisord.conf
+
 EXPOSE 8080
-CMD ["node", "--import", "./deploy/server/register.mjs", "deploy/server/index.js"]
+
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisord.conf"]

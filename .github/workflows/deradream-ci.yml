@@ -31,7 +31,16 @@ jobs:
             sleep 1
           done
           curl -fsS http://127.0.0.1:18080/ >/dev/null
-          docker exec imgbed-combined-test supervisorctl -c /etc/supervisord.conf status
+          for i in $(seq 1 15); do
+            STATUS="$(docker exec imgbed-combined-test supervisorctl -c /etc/supervisord.conf status || true)"
+            echo "$STATUS"
+            if echo "$STATUS" | grep -q '^imgbed.*RUNNING' \
+              && echo "$STATUS" | grep -q '^telegram-bot.*RUNNING' \
+              && echo "$STATUS" | grep -q '^updater.*RUNNING'; then
+              break
+            fi
+            sleep 1
+          done
           docker exec imgbed-combined-test sh -c "supervisorctl -c /etc/supervisord.conf status imgbed | grep RUNNING"
           docker exec imgbed-combined-test sh -c "supervisorctl -c /etc/supervisord.conf status telegram-bot | grep RUNNING"
           docker exec imgbed-combined-test sh -c "supervisorctl -c /etc/supervisord.conf status updater | grep RUNNING"

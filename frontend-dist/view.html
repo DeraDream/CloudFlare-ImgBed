@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#f5f5f7">
+<title>图片预览 · ImgBed</title>
+<link rel="icon" href="/static/media/logo.png">
+<link rel="stylesheet" href="/css/app.966aac8a.css">
+<style>
+*{box-sizing:border-box}
+html,body{width:100%;min-height:100%;margin:0}
+body{background:var(--bg-color);color:var(--el-text-color-primary);font-family:Avenir,Helvetica,Arial,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;overflow:hidden}
+.preview-shell{height:100dvh;display:flex;align-items:center;justify-content:center;padding:16px 16px calc(16px + env(safe-area-inset-bottom));position:relative}
+.preview-image{display:block;max-width:100%;max-height:100%;width:auto;height:auto;object-fit:contain;border-radius:10px;box-shadow:0 10px 34px rgba(0,0,0,.08);background:var(--el-fill-color-lighter)}
+.preview-state{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:28px;color:var(--el-text-color-secondary);text-align:center}
+.mobile-toolbar{display:none;position:fixed;left:14px;right:14px;bottom:calc(12px + env(safe-area-inset-bottom));z-index:20;padding:8px;border:1px solid var(--glass-border);border-radius:18px;background:var(--glass-bg);backdrop-filter:blur(var(--glass-backdrop-blur)) saturate(1.35);-webkit-backdrop-filter:blur(var(--glass-backdrop-blur)) saturate(1.35);box-shadow:var(--glass-shadow);gap:6px}
+.action{flex:1;min-width:0;border:0;background:transparent;color:var(--toolbar-button-color);border-radius:12px;padding:9px 4px 8px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;font:500 11px/1.15 Avenir,Helvetica,Arial,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;-webkit-tap-highlight-color:transparent}
+.action:active{background:var(--modern-action-group-hover-bg);transform:scale(.98)}
+.action svg{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.toast{position:fixed;left:50%;bottom:calc(92px + env(safe-area-inset-bottom));transform:translate(-50%,12px);max-width:calc(100vw - 40px);padding:9px 13px;border-radius:10px;border:1px solid var(--glass-border);background:var(--glass-bg);backdrop-filter:blur(var(--glass-backdrop-blur)) saturate(1.35);-webkit-backdrop-filter:blur(var(--glass-backdrop-blur)) saturate(1.35);color:var(--el-text-color-primary);font-size:13px;opacity:0;pointer-events:none;transition:.22s ease;z-index:30;text-align:center;white-space:normal}
+.toast.show{opacity:1;transform:translate(-50%,0)}
+.wx-tip{position:fixed;inset:0;background:rgba(0,0,0,.52);z-index:40;display:none;align-items:flex-start;justify-content:flex-end;padding:18px 18px 0}
+.wx-tip.show{display:flex}
+.wx-card{max-width:270px;background:var(--el-fill-color-blank);color:var(--el-text-color-primary);border:1px solid var(--glass-border);border-radius:14px;padding:14px 16px;line-height:1.55;font-size:14px;box-shadow:0 12px 30px rgba(0,0,0,.18)}
+.wx-arrow{font-size:22px;line-height:1;margin-left:6px}
+@media(max-width:768px),(hover:none) and (pointer:coarse){
+  .preview-shell{padding:10px 10px calc(96px + env(safe-area-inset-bottom))}
+  .preview-image{border-radius:8px}
+  .mobile-toolbar{display:flex}
+}
+@media(prefers-color-scheme:dark){
+  html:not(.light){color-scheme:dark}
+  html:not(.light) body{background:#0f0f0f}
+}
+</style>
+<script>
+(function(){
+  try{
+    const saved=localStorage.getItem('theme')||localStorage.getItem('darkMode');
+    if(saved==='dark'||saved==='true')document.documentElement.classList.add('dark');
+    else if(saved==='light'||saved==='false')document.documentElement.classList.add('light');
+    else if(matchMedia('(prefers-color-scheme: dark)').matches)document.documentElement.classList.add('dark');
+  }catch(e){
+    if(matchMedia('(prefers-color-scheme: dark)').matches)document.documentElement.classList.add('dark');
+  }
+})();
+</script>
+</head>
+<body>
+<main class="preview-shell">
+  <div id="state" class="preview-state">正在加载图片…</div>
+  <img id="image" class="preview-image" alt="ImgBed image preview" hidden>
+</main>
+
+<nav class="mobile-toolbar" aria-label="图片操作">
+  <button class="action" id="saveBtn" type="button" aria-label="保存图片">
+    <svg viewBox="0 0 24 24"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></svg>
+    <span>保存</span>
+  </button>
+  <button class="action" id="shareBtn" type="button" aria-label="系统分享">
+    <svg viewBox="0 0 24 24"><circle cx="18" cy="5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="19" r="2.5"/><path d="m8.2 10.9 7.6-4.7"/><path d="m8.2 13.1 7.6 4.7"/></svg>
+    <span>分享</span>
+  </button>
+  <button class="action" id="copyBtn" type="button" aria-label="复制链接">
+    <svg viewBox="0 0 24 24"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>
+    <span>复制链接</span>
+  </button>
+  <button class="action" id="wechatBtn" type="button" aria-label="分享到微信">
+    <svg viewBox="0 0 24 24"><path d="M9.2 5.2c-4 0-7.2 2.5-7.2 5.7 0 1.8 1 3.4 2.7 4.5l-.7 2.3 2.8-1.4c.8.2 1.6.3 2.4.3 4 0 7.2-2.5 7.2-5.7S13.2 5.2 9.2 5.2Z"/><path d="M13.7 9.2c4 0 7.2 2.4 7.2 5.4 0 1.7-.9 3.2-2.5 4.2l.6 2.1-2.6-1.3c-.8.2-1.7.4-2.7.4-3.6 0-6.6-2-7.1-4.7"/></svg>
+    <span>微信</span>
+  </button>
+</nav>
+
+<div id="toast" class="toast"></div>
+<div id="wxTip" class="wx-tip">
+  <div class="wx-card">请点击右上角 <b>···</b>，选择“发送给朋友”或“分享到朋友圈”。<span class="wx-arrow">↗</span></div>
+</div>
+
+<script>
+const image=document.getElementById('image');
+const state=document.getElementById('state');
+const toastEl=document.getElementById('toast');
+const wxTip=document.getElementById('wxTip');
+
+const encodedId=location.pathname.startsWith('/view/')?location.pathname.slice('/view/'.length):'';
+const rawUrl=encodedId?('/file/'+encodedId):'';
+const previewUrl=location.href;
+let toastTimer=null;
+
+function toast(message){
+  toastEl.textContent=message;
+  toastEl.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer=setTimeout(()=>toastEl.classList.remove('show'),2200);
+}
+function filenameFromHeaders(response){
+  const cd=response.headers.get('content-disposition')||'';
+  const utf=cd.match(/filename\*=UTF-8''([^;]+)/i);
+  if(utf){try{return decodeURIComponent(utf[1])}catch(e){}}
+  const simple=cd.match(/filename="?([^";]+)"?/i);
+  if(simple)return simple[1];
+  return 'image';
+}
+async function getImageFile(){
+  const response=await fetch(rawUrl,{credentials:'same-origin',cache:'no-store'});
+  if(!response.ok)throw new Error('图片获取失败');
+  const blob=await response.blob();
+  const name=filenameFromHeaders(response);
+  return new File([blob],name,{type:blob.type||'image/jpeg'});
+}
+async function copyText(text){
+  try{
+    await navigator.clipboard.writeText(text);
+  }catch(e){
+    const ta=document.createElement('textarea');
+    ta.value=text;ta.style.position='fixed';ta.style.opacity='0';
+    document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();
+  }
+}
+document.getElementById('copyBtn').addEventListener('click',async()=>{
+  await copyText(previewUrl);
+  toast('预览链接已复制');
+});
+document.getElementById('shareBtn').addEventListener('click',async()=>{
+  if(navigator.share){
+    try{await navigator.share({title:'图片预览',url:previewUrl});return}catch(e){if(e&&e.name==='AbortError')return}
+  }
+  await copyText(previewUrl);
+  toast('当前浏览器不支持系统分享，链接已复制');
+});
+document.getElementById('wechatBtn').addEventListener('click',async()=>{
+  const inWeChat=/MicroMessenger/i.test(navigator.userAgent);
+  if(inWeChat){wxTip.classList.add('show');return}
+  if(navigator.share){
+    try{
+      await navigator.share({title:'图片预览',url:previewUrl});
+      return;
+    }catch(e){if(e&&e.name==='AbortError')return}
+  }
+  await copyText(previewUrl);
+  toast('链接已复制，请粘贴到微信');
+});
+wxTip.addEventListener('click',()=>wxTip.classList.remove('show'));
+
+document.getElementById('saveBtn').addEventListener('click',async()=>{
+  try{
+    const file=await getImageFile();
+    const isIOS=/iPad|iPhone|iPod/.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
+    if(isIOS&&navigator.share&&navigator.canShare&&navigator.canShare({files:[file]})){
+      toast('请在系统面板中选择“存储图像”');
+      await navigator.share({files:[file],title:'保存图片'});
+      return;
+    }
+    const objectUrl=URL.createObjectURL(file);
+    const a=document.createElement('a');
+    a.href=objectUrl;a.download=file.name||'image';a.rel='noopener';
+    document.body.appendChild(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(objectUrl),1500);
+    toast('已开始保存图片');
+  }catch(e){
+    toast(e&&e.message?e.message:'保存失败，请长按图片保存');
+  }
+});
+
+if(!encodedId){
+  state.textContent='无效的预览链接';
+}else{
+  image.src=rawUrl;
+  image.onload=()=>{state.hidden=true;image.hidden=false};
+  image.onerror=()=>{image.hidden=true;state.hidden=false;state.textContent='图片加载失败或文件不存在'};
+}
+</script>
+</body>
+</html>

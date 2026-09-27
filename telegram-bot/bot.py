@@ -2037,6 +2037,7 @@ async def flush_media_group(
     album_folder = effective_upload_folder(settings)
     results = []
     failures = []
+    auth_pending_ids = []
     for index, source in enumerate(sources, start=1):
         reporter.set_item(index, len(sources), source["filename"])
         await reporter.report(1, f"准备第 {index}/{len(sources)} 个文件")
@@ -2053,9 +2054,33 @@ async def flush_media_group(
             results.append(row)
         except UploadProcessError as exc:
             row = get_history(DB_PATH, exc.history_id, uid)
+            if is_upload_auth_required(exc.cause):
+                auth_pending_ids.append(exc.history_id)
+
+                # 未处理的相册成员也先保存成历史记录，认证成功后可以完整继续。
+                for remaining in sources[index:]:
+                    pending_id = create_pending_history(
+                        remaining,
+                        settings,
+                        uid,
+                        first.effective_chat.id,
+                        album_folder,
+                    )
+                    update_history(
+                        DB_PATH,
+                        pending_id,
+                        status="auth_required",
+                        error="等待上传密码认证",
+                    )
+                    auth_pending_ids.append(pending_id)
+                break
             failures.append((row, exc))
 
     await reporter.stop()
+
+    if auth_pending_ids:
+        await prompt_upload_password(status, uid, auth_pending_ids)
+        return
 
     lines = [
         "🖼 <b>相册上传完成</b>",
@@ -2113,6 +2138,126 @@ async def enqueue_media_group(
 
     entry["task"] = context.application.create_task(
         flush_media_group(context.application, key)
+    )
+
+
+async def retry_pending_auth_uploads(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    history_ids: List[int],
+) -> None:
+    uid = update.effective_user.id
+    rows = [
+        get_history(DB_PATH, history_id, uid)
+        for history_id in history_ids
+    ]
+    rows = [row for row in rows if row is not None]
+    if not rows:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="✅ 认证成功，但没有需要继续的上传任务。",
+        )
+        return
+
+    status = await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=f"✅ 上传密码认证成功，正在继续 {len(rows)} 个上传任务…",
+    )
+    reporter = UploadProgressReporter(
+        status,
+        rows[0]["original_name"] or rows[0]["final_name"] or "telegram-file",
+    )
+    reporter.set_item(
+        1,
+        len(rows),
+        rows[0]["original_name"] or rows[0]["final_name"] or "telegram-file",
+    )
+    await reporter.start()
+
+    results = []
+    failures = []
+    for index, row in enumerate(rows, start=1):
+        source = source_from_history(row)
+        settings = settings_from_snapshot(uid, decode_settings(row))
+        reporter.set_item(index, len(rows), source["filename"])
+        await reporter.report(1, f"认证后继续第 {index}/{len(rows)} 个文件")
+
+        try:
+            result = await process_source_upload(
+                context.application,
+                source,
+                settings,
+                uid,
+                update.effective_chat.id,
+                reporter,
+                history_id=int(row["id"]),
+                upload_folder_override=row["upload_folder"] or "/",
+            )
+            results.append(result)
+        except UploadProcessError as exc:
+            if is_upload_auth_required(exc.cause):
+                # 新会话仍然被拒绝：清掉会话并重新等待密码。
+                clear_upload_session(uid)
+                remaining_ids = [exc.history_id]
+                for remaining_row in rows[index:]:
+                    remaining_ids.append(int(remaining_row["id"]))
+                await reporter.stop()
+                await prompt_upload_password(status, uid, remaining_ids)
+                return
+            failures.append(
+                (get_history(DB_PATH, exc.history_id, uid), exc)
+            )
+
+    await reporter.stop()
+
+    if len(rows) == 1 and results and not failures:
+        row = results[0]
+        await status.edit_text(
+            upload_result_text(row),
+            parse_mode="HTML",
+            reply_markup=upload_result_keyboard(row),
+            disable_web_page_preview=True,
+        )
+        return
+
+    lines = [
+        "✅ <b>认证后上传完成</b>",
+        "",
+        f"成功：<b>{len(results)}</b> / {len(rows)}",
+    ]
+    if failures:
+        lines.append(f"失败：<b>{len(failures)}</b>")
+    lines.append("")
+
+    for row in results:
+        name = row["final_name"] or row["original_name"] or "file"
+        icon = "⚡" if int(row["is_duplicate"] or 0) else "✅"
+        lines.append(
+            f'{icon} <a href="{html.escape(row["url"], quote=True)}">'
+            f"{html.escape(name)}</a>"
+        )
+    for row, exc in failures:
+        name = row["original_name"] if row else "file"
+        lines.append(
+            f"❌ {html.escape(str(name))} · "
+            f"{html.escape(str(exc.cause)[:120])}"
+        )
+
+    buttons = [[InlineKeyboardButton("🕘 最近上传", callback_data="recent:0")]]
+    for row, _ in failures[:5]:
+        if row:
+            buttons.append([
+                InlineKeyboardButton(
+                    f"🔄 重试 {str(row['original_name'] or row['id'])[:28]}",
+                    callback_data=f"retry:{row['id']}",
+                )
+            ])
+
+    await status.edit_text(
+        "\n".join(lines),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(buttons),
+        disable_web_page_preview=True,
     )
 
 

@@ -16,17 +16,33 @@ jobs:
           python3 -m py_compile telegram-bot/bot.py telegram-bot/history_store.py updater/server.py
 
 
-      - name: Build Telegram bot image
+      - name: Build combined ImgBed image
         run: |
-          docker build -t deradream-imgbed-bot:test telegram-bot
+          docker build -t deradream-imgbed:test .
+
+      - name: Combined container process smoke test
+        run: |
+          docker run -d --name imgbed-combined-test -p 18080:8080 \
+            -e PROJECT_DIR=/tmp/nonexistent-project \
+            deradream-imgbed:test
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18080/ >/dev/null; then break; fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:18080/ >/dev/null
+          docker exec imgbed-combined-test sh -c "pgrep -f 'deploy/server/index.js' >/dev/null"
+          docker exec imgbed-combined-test sh -c "pgrep -f '/app/telegram-bot/bot.py' >/dev/null"
+          docker exec imgbed-combined-test sh -c "pgrep -f '/app/updater/server.py' >/dev/null"
+          docker logs imgbed-combined-test
+          docker rm -f imgbed-combined-test
 
       - name: Telegram bot feature smoke test
         run: |
           docker run --rm \
+            -w /app/telegram-bot \
             -e BOT_DB_PATH=/tmp/bot-test.db \
             -e BOT_TIMEZONE=Asia/Shanghai \
-            --entrypoint python \
-            deradream-imgbed-bot:test -c "
+            deradream-imgbed:test python -c "
           import bot
           from history_store import create_history, find_duplicate, get_history, update_history
           bot.init_db()

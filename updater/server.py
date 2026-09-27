@@ -27,6 +27,8 @@ state = {
     "startedAt": None,
     "finishedAt": None,
     "success": None,
+    "targetImage": None,
+    "handoffUntil": None,
 }
 
 # updater 自身会在成功升级后被重建，因此把最后结果恢复到内存，
@@ -143,20 +145,57 @@ def status_payload(fetch=True):
                     check=False,
                 ).splitlines()
             )
-            deploy_ok = current_commit == latest_commit and {"imgbed", "telegram-bot"}.issubset(running)
-            with lock:
-                state.update({
-                    "updating": False,
-                    "stage": "done" if deploy_ok else "failed",
-                    "message": (
-                        "升级完成，已从重启中恢复状态"
-                        if deploy_ok
-                        else "升级过程被中断，请重新执行升级"
-                    ),
-                    "finishedAt": now(),
-                    "success": bool(deploy_ok),
-                })
-                persist_state()
+
+            container_id = run(
+                [
+                    "docker", "compose", "-f", str(COMPOSE_FILE),
+                    "ps", "-q", "imgbed"
+                ],
+                timeout=30,
+                check=False,
+            ).strip()
+            running_image = ""
+            if container_id:
+                running_image = run(
+                    ["docker", "inspect", "-f", "{{.Image}}", container_id],
+                    timeout=30,
+                    check=False,
+                ).strip()
+
+            target_image = str(state.get("targetImage") or "").strip()
+            handoff_until = int(state.get("handoffUntil") or 0)
+            image_matches = (not target_image) or running_image == target_image
+            deploy_ok = (
+                current_commit == latest_commit
+                and "imgbed" in running
+                and image_matches
+            )
+
+            if deploy_ok:
+                with lock:
+                    state.update({
+                        "updating": False,
+                        "stage": "done",
+                        "message": "升级完成，ImgBed / Telegram Bot / 更新器已全部应用新版本",
+                        "finishedAt": now(),
+                        "success": True,
+                        "handoffUntil": None,
+                    })
+                    persist_state()
+            elif handoff_until and now() < handoff_until:
+                # helper 正在接管当前容器，暂时维持 updating=true，避免误判失败。
+                pass
+            else:
+                with lock:
+                    state.update({
+                        "updating": False,
+                        "stage": "failed",
+                        "message": "升级接管超时或新镜像未成功运行，请检查更新日志",
+                        "finishedAt": now(),
+                        "success": False,
+                        "handoffUntil": None,
+                    })
+                    persist_state()
 
         with lock:
             snapshot = dict(state)
@@ -198,6 +237,8 @@ def do_update():
             "startedAt": now(),
             "finishedAt": None,
             "success": None,
+            "targetImage": None,
+            "handoffUntil": None,
         })
         persist_state()
 
@@ -235,74 +276,55 @@ def do_update():
         git("reset", "--hard", f"origin/{BRANCH}", timeout=60)
 
         with lock:
-            state.update({"stage": "build", "message": "正在构建新版本容器"})
-            persist_state()
-        # 先构建，构建成功后 Compose 才会替换现有容器。
-        run([
-            "docker", "compose", "-f", str(COMPOSE_FILE),
-            "build", "--pull", "imgbed", "telegram-bot"
-        ], timeout=3600)
-
-        with lock:
-            state.update({"stage": "deploy", "message": "正在重启 ImgBed 与 Telegram Bot 并应用新版本"})
-            persist_state()
-        run([
-            "docker", "compose", "-f", str(COMPOSE_FILE),
-            "up", "-d", "--no-build", "imgbed", "telegram-bot"
-        ], timeout=600)
-
-        with lock:
             state.update({
-                "updating": False,
-                "stage": "done",
-                "message": f"升级完成：{read_version()}",
-                "finishedAt": now(),
-                "success": True,
+                "stage": "build",
+                "message": "正在构建新版 ImgBed 一体化容器（包含 Telegram Bot 与更新器）"
             })
             persist_state()
 
-        # 最后更新 updater 自身。
-        #
-        # 不能在 updater 容器内部直接执行 "docker compose up updater"：
-        # Compose 会停止当前容器，连同正在执行 Compose 的进程一起杀掉，
-        # 容易留下半重建容器 / 名称冲突，最终导致 service DNS "updater" 永久消失。
-        #
-        # 这里先构建新 updater 镜像，再启动一个独立 helper 容器。
-        # helper 与当前 updater 不同容器，因此当前 updater 被替换时 helper 仍会继续
-        # 完成 compose up，确保 updater 最终重新上线。
-        try:
-            run([
-                "docker", "compose", "-f", str(COMPOSE_FILE),
-                "build", "--pull", "updater"
-            ], timeout=1800)
+        run([
+            "docker", "compose", "-f", str(COMPOSE_FILE),
+            "build", "--pull", "imgbed"
+        ], timeout=3600)
 
-            updater_image = run([
-                "docker", "compose", "-f", str(COMPOSE_FILE),
-                "images", "-q", "updater"
-            ], timeout=30).splitlines()[0].strip()
-            if not updater_image:
-                raise RuntimeError("cannot resolve newly built updater image")
+        target_image = run([
+            "docker", "compose", "-f", str(COMPOSE_FILE),
+            "images", "-q", "imgbed"
+        ], timeout=30).splitlines()[0].strip()
+        if not target_image:
+            raise RuntimeError("cannot resolve newly built imgbed image")
 
-            helper_name = f"imgbed-updater-refresh-{now()}"
-            helper_script = (
-                "sleep 3; "
-                f"cd {str(PROJECT_DIR)!r}; "
-                f"docker compose -f {str(COMPOSE_FILE)!r} "
-                "up -d --no-deps --no-build updater"
-            )
-            run([
-                "docker", "run", "--rm", "-d",
-                "--name", helper_name,
-                "-v", "/var/run/docker.sock:/var/run/docker.sock",
-                "-v", f"{PROJECT_DIR}:{PROJECT_DIR}",
-                "-e", f"PROJECT_DIR={PROJECT_DIR}",
-                "-w", str(PROJECT_DIR),
-                updater_image,
-                "sh", "-c", helper_script,
-            ], timeout=60)
-            log(f"scheduled updater self-refresh via helper {helper_name}")
-        except Exception as exc:
-            log(f"updater self-refresh warning: {exc}")
+        with lock:
+            state.update({
+                "stage": "deploy",
+                "message": "正在重启 ImgBed 一体化容器并应用新版本",
+                "targetImage": target_image,
+                "handoffUntil": now() + 120,
+            })
+            persist_state()
+
+        # 当前 updater 已经运行在 imgbed 容器内部，不能直接由自己执行
+        # "docker compose up imgbed" 重建自己，否则命令进程会被一起杀死。
+        # 使用刚构建的新镜像启动一个临时 helper，helper 不属于 Compose 项目，
+        # 即使当前 imgbed 被停止，它仍能继续完成单容器重建。
+        helper_name = f"imgbed-update-helper-{now()}"
+        helper_script = (
+            "sleep 3; "
+            f"cd {str(PROJECT_DIR)!r}; "
+            f"docker compose -f {str(COMPOSE_FILE)!r} "
+            "up -d --no-deps --no-build --force-recreate --remove-orphans imgbed"
+        )
+        run([
+            "docker", "run", "--rm", "-d",
+            "--name", helper_name,
+            "-v", "/var/run/docker.sock:/var/run/docker.sock",
+            "-v", f"{PROJECT_DIR}:{PROJECT_DIR}",
+            "-e", f"PROJECT_DIR={PROJECT_DIR}",
+            "-w", str(PROJECT_DIR),
+            target_image,
+            "sh", "-c", helper_script,
+        ], timeout=60)
+        log(f"scheduled combined imgbed refresh via helper {helper_name}")
 
     except Exception as exc:
         log(f"UPDATE FAILED: {exc}")
@@ -359,7 +381,7 @@ class Handler(BaseHTTPRequestHandler):
         self._json(202, {
             "ok": True,
             "accepted": True,
-            "message": "升级任务已开始，图床和 Bot 可能短暂重启",
+            "message": "升级任务已开始，ImgBed 一体化容器将短暂重启",
         })
 
 

@@ -14,7 +14,7 @@ FROM node:22-alpine AS runtime
 RUN apk add --no-cache \
         ca-certificates curl git \
         python3 py3-pip \
-        supervisor \
+        supervisor procps \
         docker-cli docker-cli-compose \
         libjpeg-turbo libwebp zlib && \
     apk add --no-cache --virtual .bot-build \

@@ -42,7 +42,7 @@ from telegram.ext import (
     filters,
 )
 
-BOT_VERSION = "v0.4.2"
+BOT_VERSION = "v0.4.3"
 BOT_TOKEN_ENV = os.getenv("BOT_TOKEN", "").strip()
 IMGBED_URL = os.getenv("IMGBED_URL", "http://imgbed:8080").rstrip("/")
 IMGBED_PUBLIC_URL = os.getenv("IMGBED_PUBLIC_URL", "").strip().rstrip("/")
@@ -2401,9 +2401,18 @@ def wait_for_runtime_config() -> str:
         time.sleep(10)
 
 
+def ensure_main_event_loop() -> None:
+    """Python 3.14 no longer creates a default event loop for the main thread."""
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        asyncio.set_event_loop(asyncio.new_event_loop())
+
+
 def main() -> None:
     init_db()
     bot_token = wait_for_runtime_config()
+    ensure_main_event_loop()
     app = Application.builder().token(bot_token).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("menu", menu_cmd))

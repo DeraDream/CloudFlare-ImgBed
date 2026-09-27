@@ -25,6 +25,7 @@ jobs:
           docker run -d --name imgbed-combined-test -p 18080:8080 \
             -e PROJECT_DIR=/tmp/nonexistent-project \
             deradream-imgbed:test
+          trap 'docker logs imgbed-combined-test || true; docker rm -f imgbed-combined-test >/dev/null 2>&1 || true' EXIT
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:18080/ >/dev/null; then break; fi
             sleep 1
@@ -34,7 +35,6 @@ jobs:
           docker exec imgbed-combined-test sh -c "pgrep -f '/app/telegram-bot/bot.py' >/dev/null"
           docker exec imgbed-combined-test sh -c "pgrep -f '/app/updater/server.py' >/dev/null"
           docker logs imgbed-combined-test
-          docker rm -f imgbed-combined-test
 
       - name: Telegram bot feature smoke test
         run: |

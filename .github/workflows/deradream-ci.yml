@@ -53,8 +53,22 @@ jobs:
             -e BOT_DB_PATH=/tmp/bot-test.db \
             -e BOT_TIMEZONE=Asia/Shanghai \
             deradream-imgbed:test python -c "
+          import asyncio
           import bot
           from history_store import create_history, find_duplicate, get_history, update_history
+
+          asyncio.set_event_loop(None)
+          try:
+              asyncio.get_event_loop()
+          except RuntimeError:
+              pass
+          else:
+              raise AssertionError('expected no implicit event loop')
+          bot.ensure_main_event_loop()
+          assert asyncio.get_event_loop() is not None
+          asyncio.get_event_loop().close()
+          asyncio.set_event_loop(None)
+
           bot.init_db()
           tags, note = bot.parse_caption_metadata('#服务器 #截图 测试备注')
           assert tags == ['服务器', '截图'], (tags, note)

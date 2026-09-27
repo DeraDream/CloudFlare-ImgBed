@@ -119,6 +119,9 @@ def validate_repo():
 def status_payload(fetch=True):
     global update_thread
 
+    with lock:
+        snapshot = dict(state)
+
     # 如果 updater 容器曾在升级过程中被重启，持久化文件可能仍是 updating=true，
     # 但新进程里已经没有执行中的升级线程。此时自动恢复，不再永久卡在 deploy。
     with lock:

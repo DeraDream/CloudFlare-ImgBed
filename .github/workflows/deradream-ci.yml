@@ -31,9 +31,10 @@ jobs:
             sleep 1
           done
           curl -fsS http://127.0.0.1:18080/ >/dev/null
-          docker exec imgbed-combined-test sh -c "pgrep -f 'deploy/server/index.js' >/dev/null"
-          docker exec imgbed-combined-test sh -c "pgrep -f '/app/telegram-bot/bot.py' >/dev/null"
-          docker exec imgbed-combined-test sh -c "pgrep -f '/app/updater/server.py' >/dev/null"
+          docker exec imgbed-combined-test supervisorctl -c /etc/supervisord.conf status
+          docker exec imgbed-combined-test sh -c "supervisorctl -c /etc/supervisord.conf status imgbed | grep RUNNING"
+          docker exec imgbed-combined-test sh -c "supervisorctl -c /etc/supervisord.conf status telegram-bot | grep RUNNING"
+          docker exec imgbed-combined-test sh -c "supervisorctl -c /etc/supervisord.conf status updater | grep RUNNING"
           docker logs imgbed-combined-test
 
       - name: Telegram bot feature smoke test

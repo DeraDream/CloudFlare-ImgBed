@@ -1,5 +1,16 @@
 # DeraDream Fork Changelog
 
+## 3.1
+
+- Docker 部署改为单容器：ImgBed、Telegram Bot、在线更新器全部运行在同一个 `imgbed` 容器中。
+- 使用 Supervisor 管理 Node 主服务、Telegram Bot 和 updater 三个进程；任一子进程异常会在容器内自动拉起。
+- Compose 永久服务从 3 个减少为 1 个，不再存在 `telegram-bot` / `updater` 服务 DNS 丢失问题。
+- Bot 内部调用 ImgBed 改为 `127.0.0.1:8080`，调用 updater 改为 `127.0.0.1:8081`。
+- 保留原 `./telegram-bot-data` 挂载，历史记录、设置、Session 与待续传任务无需迁移。
+- 在线升级只构建一个 ImgBed 一体化镜像，再通过临时 helper 容器原子重建唯一的 `imgbed` 服务。
+- 新 updater 会校验运行中的容器镜像 ID，避免旧镜像仍在运行时误报升级成功。
+- 首次从旧三容器架构迁移时使用 `docker compose up -d --build --force-recreate --remove-orphans`，旧 Bot/updater 容器会自动移除。
+
 ## 3.0
 
 - Telegram Bot 支持网页「上传密码」认证兜底。

@@ -31,6 +31,7 @@ jobs:
             sleep 1
           done
           curl -fsS http://127.0.0.1:18080/ >/dev/null
+          curl -fsS http://127.0.0.1:18080/view/preview-smoke-test | grep -q 'mobile-toolbar'
           for i in $(seq 1 15); do
             STATUS="$(docker exec imgbed-combined-test supervisorctl -c /etc/supervisord.conf status || true)"
             echo "$STATUS"
@@ -88,8 +89,14 @@ jobs:
               channel_name='cloudflare', upload_folder=folder, user_id=10001
           )
           assert row and row['id'] == hid
-          update_history(bot.DB_PATH, hid, tags=['x'], note='n')
-          assert get_history(bot.DB_PATH, hid)['note'] == 'n'
+          update_history(
+              bot.DB_PATH, hid,
+              tags=['x'], note='n',
+              preview_url='https://img.example.com/view/test'
+          )
+          saved = get_history(bot.DB_PATH, hid)
+          assert saved['note'] == 'n'
+          assert saved['preview_url'] == 'https://img.example.com/view/test'
           print('telegram feature smoke test: OK')
           "
 

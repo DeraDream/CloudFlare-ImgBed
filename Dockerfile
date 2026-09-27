@@ -17,6 +17,8 @@ RUN apk add --no-cache \
         supervisor \
         docker-cli docker-cli-compose \
         libjpeg-turbo libwebp zlib && \
+    apk add --no-cache --virtual .bot-build \
+        build-base python3-dev jpeg-dev zlib-dev libwebp-dev && \
     python3 -m venv /opt/venv
 
 WORKDIR /app
@@ -43,7 +45,8 @@ COPY deploy/server ./deploy/server
 
 COPY telegram-bot/requirements.txt /tmp/telegram-bot-requirements.txt
 RUN /opt/venv/bin/pip install --no-cache-dir -r /tmp/telegram-bot-requirements.txt && \
-    rm -f /tmp/telegram-bot-requirements.txt
+    rm -f /tmp/telegram-bot-requirements.txt && \
+    apk del .bot-build
 
 COPY telegram-bot ./telegram-bot
 COPY updater ./updater

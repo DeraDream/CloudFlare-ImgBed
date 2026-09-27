@@ -42,7 +42,7 @@ from telegram.ext import (
     filters,
 )
 
-BOT_VERSION = "v0.4.1"
+BOT_VERSION = "v0.4.2"
 BOT_TOKEN_ENV = os.getenv("BOT_TOKEN", "").strip()
 IMGBED_URL = os.getenv("IMGBED_URL", "http://imgbed:8080").rstrip("/")
 IMGBED_PUBLIC_URL = os.getenv("IMGBED_PUBLIC_URL", "").strip().rstrip("/")
@@ -235,6 +235,60 @@ def set_meta(key: str, value) -> None:
 def delete_meta(key: str) -> None:
     with db_connect() as conn:
         conn.execute("DELETE FROM bot_meta WHERE key=?", (key,))
+
+
+def upload_session_key(user_id: int) -> str:
+    return f"upload_user_session:{int(user_id)}"
+
+
+def pending_auth_key(user_id: int) -> str:
+    return f"upload_auth_pending:{int(user_id)}"
+
+
+def get_upload_session(user_id: int) -> str:
+    return get_meta(upload_session_key(user_id), "").strip()
+
+
+def set_upload_session(user_id: int, token: str) -> None:
+    set_meta(upload_session_key(user_id), token.strip())
+
+
+def clear_upload_session(user_id: int) -> None:
+    delete_meta(upload_session_key(user_id))
+
+
+def get_pending_auth_history(user_id: int) -> List[int]:
+    raw = get_meta(pending_auth_key(user_id), "")
+    if not raw:
+        return []
+    try:
+        value = json.loads(raw)
+        if isinstance(value, list):
+            return [int(item) for item in value if str(item).isdigit()]
+    except Exception:
+        pass
+    return []
+
+
+def set_pending_auth_history(user_id: int, history_ids: List[int]) -> None:
+    ids = []
+    seen = set()
+    for history_id in history_ids:
+        try:
+            value = int(history_id)
+        except Exception:
+            continue
+        if value > 0 and value not in seen:
+            seen.add(value)
+            ids.append(value)
+    if ids:
+        set_meta(pending_auth_key(user_id), json.dumps(ids))
+    else:
+        delete_meta(pending_auth_key(user_id))
+
+
+def clear_pending_auth_history(user_id: int) -> None:
+    delete_meta(pending_auth_key(user_id))
 
 
 def get_settings(user_id: int) -> UserSettings:
@@ -430,6 +484,8 @@ def history_status_icon(row) -> str:
         return "⚡" if int(row["is_duplicate"] or 0) else "✅"
     if row["status"] == "failed":
         return "❌"
+    if row["status"] == "auth_required":
+        return "🔐"
     return "⏳"
 
 
@@ -589,6 +645,40 @@ async def ensure_allowed(update: Update) -> bool:
 def api_headers() -> Dict[str, str]:
     token = current_api_token()
     return {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+
+
+def upload_api_headers(user_id: int) -> Dict[str, str]:
+    headers = api_headers()
+    session_token = get_upload_session(user_id)
+    if session_token:
+        headers["Cookie"] = f"user_session={session_token}"
+    return headers
+
+
+def authenticate_upload_password_sync(password: str) -> str:
+    response = requests.post(
+        f"{IMGBED_URL}/api/auth/login",
+        json={"authCode": password},
+        headers={"Accept": "application/json"},
+        timeout=30,
+    )
+    if response.status_code == 401:
+        raise ValueError("上传密码错误")
+    response.raise_for_status()
+
+    token = response.cookies.get("user_session")
+    if not token:
+        # 兼容某些 requests/代理环境未自动解析 CookieJar 的情况。
+        set_cookie = response.headers.get("Set-Cookie", "")
+        match = re.search(r"(?:^|[,;]\s*)user_session=([^;]+)", set_cookie)
+        token = match.group(1) if match else ""
+    if not token:
+        raise RuntimeError("认证成功但未收到 user_session")
+    return token
+
+
+async def authenticate_upload_password(password: str) -> str:
+    return await asyncio.to_thread(authenticate_upload_password_sync, password)
 
 
 def api_get_channels() -> Dict[str, List[dict]]:
@@ -896,6 +986,7 @@ def upload_file_sync(
     mime_type: str,
     settings: UserSettings,
     upload_folder: str,
+    user_id: int,
     progress_callback=None,
 ) -> str:
     params = {
@@ -917,7 +1008,7 @@ def upload_file_sync(
             progress_callback(int(monitor.bytes_read), int(monitor.len))
 
     monitor = MultipartEncoderMonitor(encoder, on_upload)
-    headers = api_headers()
+    headers = upload_api_headers(user_id)
     headers["Content-Type"] = monitor.content_type
 
     response = requests.post(
@@ -926,6 +1017,9 @@ def upload_file_sync(
         data=monitor,
         timeout=REQUEST_TIMEOUT,
     )
+    if response.status_code == 401:
+        clear_upload_session(user_id)
+        raise UploadAuthRequired("需要上传密码认证")
     if response.status_code >= 400:
         raise RuntimeError(f"HTTP {response.status_code}: {response.text[:500]}")
     result = response.json()
@@ -943,6 +1037,7 @@ async def upload_file(
     mime_type: str,
     settings: UserSettings,
     upload_folder: str,
+    user_id: int,
     reporter=None,
 ) -> str:
     loop = asyncio.get_running_loop()
@@ -965,6 +1060,7 @@ async def upload_file(
         mime_type,
         settings,
         upload_folder,
+        user_id,
         progress,
     )
 
@@ -1333,6 +1429,10 @@ def progress_bar(percent: float, width: int = 12) -> str:
     percent = max(0.0, min(100.0, float(percent)))
     filled = int(round(width * percent / 100))
     return "█" * filled + "░" * (width - filled)
+
+
+class UploadAuthRequired(RuntimeError):
+    pass
 
 
 class UploadProcessError(Exception):
@@ -1753,6 +1853,7 @@ async def process_source_upload(
                 mime,
                 settings,
                 upload_folder,
+                user_id,
                 reporter,
             )
             is_duplicate = 0
@@ -1771,6 +1872,14 @@ async def process_source_upload(
         await reporter.report(99, "正在生成访问链接")
         return get_history(DB_PATH, history_id, user_id)
 
+    except UploadAuthRequired as exc:
+        update_history(
+            DB_PATH,
+            history_id,
+            status="auth_required",
+            error="需要上传密码认证",
+        )
+        raise UploadProcessError(history_id, exc) from exc
     except Exception as exc:
         update_history(
             DB_PATH,

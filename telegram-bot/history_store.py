@@ -44,6 +44,7 @@ def init_history_db(db_path: str) -> None:
                 channel_name TEXT,
                 upload_folder TEXT,
                 url TEXT,
+                preview_url TEXT,
                 sha256 TEXT,
                 tags TEXT NOT NULL DEFAULT '[]',
                 note TEXT NOT NULL DEFAULT '',
@@ -68,6 +69,10 @@ def init_history_db(db_path: str) -> None:
             "CREATE INDEX IF NOT EXISTS idx_tg_history_group "
             "ON upload_history(media_group_id, created_at)"
         )
+
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(upload_history)").fetchall()}
+        if "preview_url" not in columns:
+            conn.execute("ALTER TABLE upload_history ADD COLUMN preview_url TEXT")
 
 
 def _encode(value: Any) -> Any:

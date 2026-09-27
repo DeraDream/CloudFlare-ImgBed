@@ -1752,6 +1752,41 @@ def upload_failure_keyboard(history_id: int) -> InlineKeyboardMarkup:
     ])
 
 
+def is_upload_auth_required(exc: Exception) -> bool:
+    return isinstance(exc, UploadAuthRequired)
+
+
+def upload_auth_prompt_text(count: int = 1) -> str:
+    suffix = f"\n待继续上传：<b>{count}</b> 个文件" if count > 1 else ""
+    return (
+        "🔐 <b>需要上传密码认证</b>\n\n"
+        "请直接发送图床的「上传密码」。"
+        + suffix
+        + "\n\n"
+        "密码只用于本次登录认证；Bot <b>不会保存明文密码</b>。\n"
+        "认证成功后只保存服务端返回的 user_session，并自动继续上传。\n"
+        "如果你之后修改上传密码、会话过期或服务端使会话失效，Bot 会再次要求认证。"
+    )
+
+
+async def prompt_upload_password(
+    message,
+    user_id: int,
+    history_ids: List[int],
+) -> None:
+    set_pending_auth_history(user_id, history_ids)
+    try:
+        await message.edit_text(
+            upload_auth_prompt_text(len(history_ids)),
+            parse_mode="HTML",
+        )
+    except Exception:
+        await message.reply_text(
+            upload_auth_prompt_text(len(history_ids)),
+            parse_mode="HTML",
+        )
+
+
 async def process_source_upload(
     application: Application,
     source: dict,
@@ -1933,8 +1968,12 @@ async def handle_single_upload(
             disable_web_page_preview=True,
         )
     except UploadProcessError as exc:
-        logger.exception("Upload failed")
         await reporter.stop()
+        if is_upload_auth_required(exc.cause):
+            await prompt_upload_password(status, uid, [exc.history_id])
+            return
+
+        logger.exception("Upload failed")
         row = get_history(DB_PATH, exc.history_id, uid)
         await status.edit_text(
             "❌ <b>上传失败</b>\n\n"
@@ -2119,6 +2158,10 @@ async def retry_history_upload(
         )
     except UploadProcessError as exc:
         await reporter.stop()
+        if is_upload_auth_required(exc.cause):
+            await prompt_upload_password(query.message, uid, [exc.history_id])
+            return
+
         failed = get_history(DB_PATH, exc.history_id, uid)
         await query.message.edit_text(
             "❌ <b>重新上传失败</b>\n\n"
